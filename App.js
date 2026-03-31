@@ -40,6 +40,38 @@ const SAVED_PHOTOS_KEY = '@creature_camera_saved_photos';
 const PHOTO_LIMIT = 20;
 const OVERFLOW_LIMIT = 50; // 超過モード時の表示上限
 const PROTECT_LIMIT = 15;  // 保護できる写真の上限枚数
+const FRAME_MAX = 20;      // フレーム残り回数の上限
+const SPECIAL_ITEM_CHANCE = 0.05; // 特殊アイテム出現確率（5%）
+const SPECIAL_ITEMS = [
+  { type: 'theme',   weight: 10, emoji: '🎁', label: '新テーマ' },
+  { type: 'frame',   weight: 40, emoji: '🌟', label: 'フレーム+5' },
+  { type: 'harmony', weight: 20, emoji: '🎊', label: '和気あいあい' },
+  { type: 'scope',   weight: 30, emoji: '🔭', label: 'スコープ' },
+];
+function pickSpecialItem() {
+  const total = SPECIAL_ITEMS.reduce((s, i) => s + i.weight, 0);
+  let r = Math.random() * total;
+  for (const item of SPECIAL_ITEMS) { r -= item.weight; if (r <= 0) return item; }
+  return SPECIAL_ITEMS[SPECIAL_ITEMS.length - 1];
+}
+// 和気あいあい：メイン生き物の位置を時計回り90°ずつ回転した4ポジション（画面外はランダム）
+function calculateHarmonyPositions(pos, size) {
+  const S  = size ?? 60;
+  const cx = SCREEN_W / 2;
+  const cy = SCREEN_H / 2;
+  const dx = pos ? (pos.left - cx) : SCREEN_W * 0.25;
+  const dy = pos ? (pos.top  - cy) : 0;
+  const candidates = [
+    { left: cx + dy,  top: cy - dx },  // 90° CW
+    { left: cx - dx,  top: cy - dy },  // 180°
+    { left: cx - dy,  top: cy + dx },  // 270° CW
+    { left: cx + dx,  top: cy + dy },  // 360°/0°
+  ];
+  return candidates.map(p => {
+    if (p.left >= 0 && p.left + S <= SCREEN_W && p.top >= 0 && p.top + S <= SCREEN_H) return p;
+    return { left: Math.random() * (SCREEN_W - S), top: Math.random() * (SCREEN_H - S) };
+  });
+}
 
 // テーマ別フレーム画像（保存時のみ合成）
 const THEME_FRAMES = {
@@ -206,7 +238,7 @@ function getEdgeSetup(edge, size, vp) {
 
 const FULL_VP = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H };
 
-function CreatureOverlay({ creature, mode, edge, onDone, posRef, onCapturable, onUncapturable, vp }) {
+function CreatureOverlay({ creature, mode, edge, onDone, posRef, onCapturable, onUncapturable, vp, isSpecial, itemLabel }) {
   const viewport = vp ?? FULL_VP;
   const isFade   = mode === 'fadein';
   const edgeSetup = isFade ? null : getEdgeSetup(edge, creature.size, viewport);
@@ -282,6 +314,89 @@ function CreatureOverlay({ creature, mode, edge, onDone, posRef, onCapturable, o
       transform: [{ scale: scaleAnim }, ...(edge === 'left' ? [{ scaleX: -1 }] : [])],
     }]}>
       <Text style={{ fontSize: creature.size * 0.8 }}>{creature.emoji}</Text>
+      {isSpecial && itemLabel && (
+        <Text style={{ color: '#fff', fontSize: 10, textAlign: 'center', backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: 4, paddingHorizontal: 4, marginTop: 2 }}>
+          {itemLabel}
+        </Text>
+      )}
+    </Animated.View>
+  );
+}
+
+// スコープオーバーレイ：漂い → 生き物追跡 → 二回拡大アニメーション → 消える
+function ScopeOverlay({ posRef, creatureActive, capturable, onAnimComplete }) {
+  const SIZE = 72;
+  const leftAnim    = useRef(new Animated.Value(SCREEN_W / 2 - SIZE / 2)).current;
+  const topAnim     = useRef(new Animated.Value(SCREEN_H / 2 - SIZE / 2)).current;
+  const scaleAnim   = useRef(new Animated.Value(1)).current;
+  const opacityAnim = useRef(new Animated.Value(0.75)).current;
+  const phaseRef    = useRef('float'); // 'float' | 'track' | 'zoom' | 'done'
+
+  // 漂うアニメーション（creature が現れるまで）
+  useEffect(() => {
+    let alive = true;
+    const drift = () => {
+      if (!alive || phaseRef.current !== 'float') return;
+      const tx = Math.random() * (SCREEN_W - SIZE);
+      const ty = Math.random() * (SCREEN_H - SIZE);
+      Animated.parallel([
+        Animated.timing(leftAnim, { toValue: tx, duration: 1800 + Math.random() * 800, useNativeDriver: false }),
+        Animated.timing(topAnim,  { toValue: ty, duration: 1800 + Math.random() * 800, useNativeDriver: false }),
+      ]).start(({ finished }) => {
+        if (alive && finished && phaseRef.current === 'float') setTimeout(drift, 300 + Math.random() * 600);
+      });
+    };
+    drift();
+    return () => { alive = false; };
+  }, []);
+
+  // 生き物が出現したら追跡
+  useEffect(() => {
+    if (!creatureActive) { phaseRef.current = 'float'; return; }
+    phaseRef.current = 'track';
+    let alive = true;
+    const id = setInterval(() => {
+      if (!alive || phaseRef.current !== 'track') return;
+      Animated.parallel([
+        Animated.timing(leftAnim, { toValue: posRef.current.left - SIZE / 2, duration: 150, useNativeDriver: false }),
+        Animated.timing(topAnim,  { toValue: posRef.current.top  - SIZE / 2, duration: 150, useNativeDriver: false }),
+      ]).start();
+    }, 150);
+    return () => { alive = false; clearInterval(id); };
+  }, [creatureActive]);
+
+  // 撮影可能になったら二回拡大アニメーション → 消える
+  useEffect(() => {
+    if (!capturable || phaseRef.current === 'zoom' || phaseRef.current === 'done') return;
+    phaseRef.current = 'zoom';
+    Animated.sequence([
+      Animated.timing(scaleAnim, { toValue: 1.9, duration: 220, useNativeDriver: false }),
+      Animated.timing(scaleAnim, { toValue: 1.0, duration: 180, useNativeDriver: false }),
+      Animated.timing(scaleAnim, { toValue: 1.9, duration: 220, useNativeDriver: false }),
+      Animated.timing(scaleAnim, { toValue: 1.0, duration: 180, useNativeDriver: false }),
+      Animated.timing(opacityAnim, { toValue: 0, duration: 300, useNativeDriver: false }),
+    ]).start(() => { phaseRef.current = 'done'; onAnimComplete?.(); });
+  }, [capturable]);
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={{
+        position: 'absolute', zIndex: 15,
+        width: SIZE, height: SIZE, borderRadius: SIZE / 2,
+        backgroundColor: 'rgba(0,10,20,0.12)',
+        borderWidth: 2, borderColor: 'rgba(140,220,255,0.9)',
+        left: leftAnim, top: topAnim,
+        opacity: opacityAnim,
+        transform: [{ scale: scaleAnim }],
+        alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      {/* 十字線 */}
+      <View pointerEvents="none" style={{ position: 'absolute', width: SIZE, height: 1, backgroundColor: 'rgba(140,220,255,0.6)' }} />
+      <View pointerEvents="none" style={{ position: 'absolute', height: SIZE, width: 1, backgroundColor: 'rgba(140,220,255,0.6)' }} />
+      {/* 中心円 */}
+      <View pointerEvents="none" style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: 'rgba(140,220,255,0.9)' }} />
     </Animated.View>
   );
 }
@@ -327,6 +442,12 @@ export default function App() {
   const [viewerVisible, setViewerVisible]     = useState(false);
   // 超過モード：起動時に上限超過を検知した場合にtrue
   const [overflowMode, setOverflowMode]       = useState(false);
+  // 特殊アイテム状態
+  const [harmonyActive, setHarmonyActive]     = useState(false); // 和気あいあい発動中
+  const [scopeActive, setScopeActive]         = useState(false); // スコープ発動中
+  const [creatureCapturable, setCreatureCapturable] = useState(false); // 現在の生き物が撮影可能か
+  const harmonyActiveRef = useRef(false);
+  const scopeActiveRef   = useRef(false);
 
   const timerRef             = useRef(null);
   const capturableRef        = useRef(false);
@@ -349,6 +470,7 @@ export default function App() {
   const selectedPhotoIdsRef = useRef({});
   const savedPhotoIdsRef    = useRef({});
   const overflowModeRef     = useRef(false);
+  const saveModeRef         = useRef(null);
 
   // カメラ許可取得後にメディアライブラリを初期化
   useEffect(() => {
@@ -404,9 +526,11 @@ export default function App() {
       const loadedDeleteMode = saved.deleteMode || 'oldest';
       setDeleteMode(loadedDeleteMode);
       deleteModeRef.current = loadedDeleteMode;
-      // 起動時に上限チェック → 超過していれば超過モードをセット
-      const isOverflow = await checkAlbumLimitAtStartup(albumMode);
-      if (isOverflow) setOverflowMode(true);
+      // 起動時に上限チェック（アルバムモードのみ）→ 超過していれば超過モードをセット
+      if (albumMode === 'album') {
+        const isOverflow = await checkAlbumLimitAtStartup(albumMode);
+        if (isOverflow) setOverflowMode(true);
+      }
       return;
     }
 
@@ -489,16 +613,22 @@ export default function App() {
   const scheduleNextCreature = useCallback(() => {
     const delay = 2000 + Math.random() * 6000;
     timerRef.current = setTimeout(() => {
+      const vp = fullScreen
+        ? { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H }
+        : { x: 10, y: 20, w: SCREEN_W - 20, h: CAMERA_AREA_H - 20, clampBottom: true };
+      // 1段階目：特殊アイテム抽選（5%）
+      if (Math.random() < SPECIAL_ITEM_CHANCE) {
+        const item = pickSpecialItem();
+        setActiveCreature({ creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, key: Date.now(), vp, isSpecial: true, itemType: item.type, itemLabel: item.label });
+        return;
+      }
+      // 2段階目：通常生き物抽選
       const creature = pickCreature(theme);
       const mode     = getAnimMode(creature.id);
       const edge     = mode === 'fadein' ? null
                      : mode === 'top'    ? 'top'
                      : mode === 'edge3'  ? EDGE3_POOL[Math.floor(Math.random() * EDGE3_POOL.length)]
                      : EDGE_POOL[Math.floor(Math.random() * EDGE_POOL.length)];
-      // フレームモード時は生き物の出現範囲をビューポートに限定
-      const vp = fullScreen
-        ? { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H }
-        : { x: 10, y: 20, w: SCREEN_W - 20, h: CAMERA_AREA_H - 20, clampBottom: true };
       setActiveCreature({ creature, mode, edge, key: Date.now(), vp });
     }, delay);
   }, [theme, fullScreen]);
@@ -521,28 +651,45 @@ export default function App() {
 
   const handleCreatureDone = useCallback(() => {
     capturableRef.current = false;
+    setCreatureCapturable(false);
     setActiveCreature(null);
     scheduleNextCreature();
   }, [scheduleNextCreature]);
 
   const takePicture = async () => {
     if (!cameraRef.current || compositing || saveMode === null) return;
-    const creatureSnapshot = activeCreature
-      ? { creature: activeCreature.creature, pos: { ...creaturePosRef.current }, edge: activeCreature.edge }
-      : null;
 
-    // 生き物が撮影可能な状態（入場完了〜退場開始前）でなければ撮影しない
-    if (!capturableRef.current) {
+    const isSpecialCapture = !!(activeCreature?.isSpecial && capturableRef.current);
+    const hasHarmony = harmonyActiveRef.current && !isSpecialCapture;
+
+    // 和気あいあい発動中は生き物なしでも撮影可能。それ以外は撮影可能状態が必要。
+    if (!capturableRef.current && !hasHarmony) {
       Alert.alert('生き物がいません！', '生き物が現れたら撮影してね 👀');
       return;
     }
 
+    const creatureSnapshot = (activeCreature && capturableRef.current)
+      ? { creature: activeCreature.creature, pos: { ...creaturePosRef.current }, edge: activeCreature.edge, isSpecial: activeCreature.isSpecial, itemType: activeCreature.itemType }
+      : null;
+
+    // 和気あいあい：使用回数を消費し、4体分のポジションと生き物を生成
+    let harmonyEntries = null;
+    if (hasHarmony) {
+      const HARM_SIZE = 60;
+      const positions = calculateHarmonyPositions(creatureSnapshot?.pos ?? null, HARM_SIZE);
+      harmonyEntries = positions.map(pos => ({ creature: pickCreature(theme), pos }));
+      harmonyActiveRef.current = false;
+      setHarmonyActive(false);
+    }
+
+    // スコープが発動中かどうかを記録（通常生き物撮影時のみ消費）
+    const wasScope = scopeActiveRef.current && !!creatureSnapshot && !isSpecialCapture;
+
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.9 });
-      // フレームは「有効 かつ 残り回数 > 0」の場合のみ使用
       const frameSource = (frameEnabled && (frameCountsRef.current[theme] ?? 0) > 0)
         ? (THEME_FRAMES[theme] ?? null) : null;
-      setCompositing({ photoUri: photo.uri, creatureSnapshot, frameSource, usedFrameTheme: frameSource ? theme : null });
+      setCompositing({ photoUri: photo.uri, creatureSnapshot, frameSource, usedFrameTheme: frameSource ? theme : null, harmonyEntries, wasScope });
     } catch (e) {
       Alert.alert('エラー', '撮影に失敗しました');
     }
@@ -601,13 +748,57 @@ export default function App() {
           } catch { /* 上限チェック失敗は無視 */ }
         }
 
+        // スコープ消費（通常生き物撮影時のみ）
+        if (compositing.wasScope) {
+          setScopeActive(false);
+          scopeActiveRef.current = false;
+        }
+
         setSuccessPhoto(uri);
         Alert.alert('📸 保存しました！', '生き物と一緒に写真フォルダに保存されたよ！', [
           { text: 'OK', onPress: () => {
             setSuccessPhoto(null);
             setCompositing(null);
-            // 削除確認が必要な場合はUIを表示
             if (deletionCandidate) setPendingDelete(deletionCandidate);
+            // 特殊アイテム効果を適用（保存ダイアログ後に実行）
+            const snap = compositing.creatureSnapshot;
+            if (snap?.isSpecial && snap?.itemType) {
+              const itype = snap.itemType;
+              setTimeout(() => {
+                if (itype === 'theme') {
+                  const locked = ALL_THEME_IDS.filter(id => !unlockedThemes.includes(id));
+                  if (locked.length > 0) {
+                    const newId = locked[Math.floor(Math.random() * locked.length)];
+                    const newUnlocked = [...unlockedThemes, newId];
+                    setUnlockedThemes(newUnlocked);
+                    const newCounts = { ...frameCountsRef.current };
+                    if ((newCounts[newId] ?? 0) < 5) newCounts[newId] = 5;
+                    setFrameCounts(newCounts);
+                    frameCountsRef.current = newCounts;
+                    persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, newUnlocked, newCounts, deleteMode);
+                    const label = THEMES.find(t => t.id === newId)?.label ?? newId;
+                    Alert.alert('🎁 新しいテーマ！', `「${label}」を取得しました！`);
+                  } else {
+                    Alert.alert('🎁 テーマ', 'すでにすべてのテーマを取得済みです！');
+                  }
+                } else if (itype === 'frame') {
+                  const newCount = Math.min(FRAME_MAX, (frameCountsRef.current[theme] ?? 0) + 5);
+                  const newCounts = { ...frameCountsRef.current, [theme]: newCount };
+                  setFrameCounts(newCounts);
+                  frameCountsRef.current = newCounts;
+                  persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, newCounts, deleteMode);
+                  Alert.alert('🌟 フレーム回数+5！', `フレームの残り回数が${newCount}回になりました！`);
+                } else if (itype === 'harmony') {
+                  setHarmonyActive(true);
+                  harmonyActiveRef.current = true;
+                  Alert.alert('🎊 和気あいあい！', '次の撮影で生き物たちが集まります！');
+                } else if (itype === 'scope') {
+                  setScopeActive(true);
+                  scopeActiveRef.current = true;
+                  Alert.alert('🔭 スコープ！', '生き物の登場場所がわかるようになりました！');
+                }
+              }, 100);
+            }
           }},
         ]);
       } catch (e) {
@@ -685,8 +876,8 @@ export default function App() {
 
   // ギャラリーを閉じるアニメーション（上スライド＋フェードアウト）
   const closeGallery = useCallback(() => {
-    // 超過モード中は、まだ上限超過していれば閉じない
-    if (overflowModeRef.current && galleryCountRef.current > PHOTO_LIMIT) {
+    // 超過モード中（アルバムモードのみ）は、まだ上限超過していれば閉じない
+    if (saveModeRef.current === 'album' && overflowModeRef.current && galleryCountRef.current > PHOTO_LIMIT) {
       Alert.alert(
         '📂 アルバムがいっぱいです',
         `写真が${PHOTO_LIMIT}枚を超えています。\n${galleryCountRef.current - PHOTO_LIMIT}枚以上削除してから戻ってください。`,
@@ -740,6 +931,9 @@ export default function App() {
   selectedPhotoIdsRef.current = selectedPhotoIds;
   savedPhotoIdsRef.current    = savedPhotoIds;
   overflowModeRef.current     = overflowMode;
+  saveModeRef.current         = saveMode;
+  harmonyActiveRef.current    = harmonyActive;
+  scopeActiveRef.current      = scopeActive;
 
   // ギャラリーから写真を開く（スロットを初期化）
   const openViewer = (index) => {
@@ -1162,8 +1356,21 @@ export default function App() {
           vp={activeCreature.vp}
           onDone={handleCreatureDone}
           posRef={creaturePosRef}
-          onCapturable={() => { capturableRef.current = true; }}
-          onUncapturable={() => { capturableRef.current = false; }}
+          isSpecial={activeCreature.isSpecial}
+          itemLabel={activeCreature.itemLabel}
+          onCapturable={() => { capturableRef.current = true; setCreatureCapturable(true); }}
+          onUncapturable={() => { capturableRef.current = false; setCreatureCapturable(false); }}
+        />
+      )}
+
+      {/* ── スコープオーバーレイ ── */}
+      {scopeActive && !compositing && !successPhoto && (
+        <ScopeOverlay
+          key={activeCreature ? `scope-${activeCreature.key}` : 'scope-idle'}
+          posRef={creaturePosRef}
+          creatureActive={!!activeCreature}
+          capturable={creatureCapturable}
+          onAnimComplete={() => {}}
         />
       )}
 
@@ -1192,6 +1399,14 @@ export default function App() {
                     </Text>
                   </View>
                 )}
+                {compositing.harmonyEntries && compositing.harmonyEntries.map((entry, i) => (
+                  <View key={`hf${i}`} style={[styles.creature, {
+                    top:  entry.pos.top  - SCREEN_H * 0.05,
+                    left: entry.pos.left - SCREEN_W * 0.05,
+                  }]}>
+                    <Text style={{ fontSize: entry.creature.size * 0.8 }}>{entry.creature.emoji}</Text>
+                  </View>
+                ))}
               </View>
               {/* フレームを最前面にフルサイズで配置 */}
               <Image
@@ -1215,6 +1430,11 @@ export default function App() {
                   </Text>
                 </View>
               )}
+              {compositing.harmonyEntries && compositing.harmonyEntries.map((entry, i) => (
+                <View key={`h${i}`} style={[styles.creature, { top: entry.pos.top, left: entry.pos.left }]}>
+                  <Text style={{ fontSize: entry.creature.size * 0.8 }}>{entry.creature.emoji}</Text>
+                </View>
+              ))}
             </>
           )}
         </View>
