@@ -1,0 +1,1756 @@
+import { useEffect, useRef, useState, useCallback } from 'react';
+import {
+  Animated,
+  Dimensions,
+  FlatList,
+  Image,
+  Modal,
+  PanResponder,
+  StyleSheet,
+  Switch,
+  Text,
+  TouchableOpacity,
+  View,
+  Alert,
+} from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as MediaLibrary from 'expo-media-library';
+import { captureRef } from 'react-native-view-shot';
+import { StatusBar } from 'expo-status-bar';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const ALBUM_NAME = 'CreatureCamera';
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const THUMB_SIZE = (SCREEN_W - 4) / 3;
+const CAMERA_AREA_H = SCREEN_H * 0.8; // framed mode: camera area height
+const PANEL_H       = SCREEN_H * 0.2; // framed mode: control panel height
+const CAMERA_FINDER = require('./assets/camera-finder.png');
+
+const THEMES = [
+  { id: 'default', label: 'デフォルト',        deletable: false },
+  { id: 'flower',  label: 'フラワー',          deletable: true  },
+  { id: 'stylish', label: 'おしゃれ',          deletable: true  },
+  { id: 'ocean',   label: '海の生き物',        deletable: true  },
+  { id: 'forest',  label: '森の生き物',        deletable: true  },
+  { id: 'savanna', label: 'サバンナの生き物',  deletable: true  },
+];
+
+const SETTINGS_KEY = 'creature_camera_settings';
+const SAVED_PHOTOS_KEY = '@creature_camera_saved_photos';
+const PHOTO_LIMIT = 20;
+const OVERFLOW_LIMIT = 50; // 超過モード時の表示上限
+const PROTECT_LIMIT = 15;  // 保護できる写真の上限枚数
+
+// テーマ別フレーム画像（保存時のみ合成）
+const THEME_FRAMES = {
+  default: require('./assets/frame-default.png'),
+  flower:  require('./assets/frame-flower.png'),
+  stylish: require('./assets/frame-stylish.png'),
+  ocean:   require('./assets/frame-ocean.png'),
+  forest:  require('./assets/frame-forest.png'),
+  savanna: require('./assets/frame-savanna.png'),
+};
+
+async function loadSettings() {
+  try {
+    const json = await AsyncStorage.getItem(SETTINGS_KEY);
+    return json ? JSON.parse(json) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function persistSettings(theme, albumMode, frameEnabled, fullScreen, unlockedThemes, frameCounts, deleteMode) {
+  try {
+    await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify({ theme, albumMode, frameEnabled, fullScreen, unlockedThemes, frameCounts, deleteMode }));
+  } catch {}
+}
+
+async function persistSavedPhotoIds(ids) {
+  try {
+    await AsyncStorage.setItem(SAVED_PHOTOS_KEY, JSON.stringify(ids));
+  } catch {}
+}
+
+// テーマIDのリスト（frameCounts の初期値生成用）
+const ALL_THEME_IDS = ['default', 'flower', 'stylish', 'ocean', 'forest', 'savanna'];
+const INITIAL_FRAME_COUNTS = Object.fromEntries(ALL_THEME_IDS.map(id => [id, 0]));
+
+// テーマ別の生き物セット
+const CREATURE_SETS = {
+  default: [
+    { id: 'octopus', emoji: '🐙', size: 80 },
+    { id: 'alien',   emoji: '👽', size: 70 },
+    { id: 'spider',  emoji: '🕷️', size: 60 },
+    { id: 'ghost',   emoji: '👻', size: 75 },
+    { id: 'eye',     emoji: '👁️', size: 65 },
+    { id: 'bug',     emoji: '🐛', size: 55 },
+  ],
+  flower: [
+    { id: 'rose',      emoji: '🌹', size: 70 },
+    { id: 'tulip',     emoji: '🌷', size: 65 },
+    { id: 'cherry',    emoji: '🌸', size: 75 },
+    { id: 'sunflower', emoji: '🌻', size: 80 },
+    { id: 'bouquet',   emoji: '💐', size: 85 },
+  ],
+  stylish: [
+    { id: 'diamond', emoji: '💎', size: 65 },
+    { id: 'sparkle', emoji: '✨', size: 70 },
+    { id: 'ring',    emoji: '💍', size: 60 },
+    { id: 'sheart',  emoji: '💖', size: 75 },
+    { id: 'ribbon',  emoji: '🎀', size: 65 },
+  ],
+  ocean: [
+    { id: 'jellyfish', emoji: '🪼', size: 70 },
+    { id: 'fish',      emoji: '🐟', size: 60 },
+    { id: 'squid',     emoji: '🦑', size: 70 },
+    { id: 'octopus2',  emoji: '🐙', size: 80 },
+    { id: 'dolphin',   emoji: '🐬', size: 85 },
+  ],
+  forest: [
+    { id: 'squirrel', emoji: '🐿️', size: 60 },
+    { id: 'monkey',   emoji: '🐒',  size: 70 },
+    { id: 'bear',     emoji: '🐻',  size: 85 },
+    { id: 'raccoon',  emoji: '🦝',  size: 70 },
+    { id: 'owl',      emoji: '🦉',  size: 65 },
+  ],
+  savanna: [
+    { id: 'lion',     emoji: '🦁', size: 85 },
+    { id: 'giraffe',  emoji: '🦒', size: 90 },
+    { id: 'elephant', emoji: '🐘', size: 95 },
+    { id: 'zebra',    emoji: '🦓', size: 80 },
+    { id: 'flamingo', emoji: '🦩', size: 75 },
+  ],
+};
+
+const SIZE_VARIANTS = [
+  ...Array(5).fill({ scale: 1.0 }),
+  ...Array(3).fill({ scale: 1.2 }),
+  ...Array(2).fill({ scale: 1.5 }),
+];
+
+function pickCreature(theme) {
+  const set     = CREATURE_SETS[theme] ?? CREATURE_SETS.default;
+  const base    = set[Math.floor(Math.random() * set.length)];
+  const variant = SIZE_VARIANTS[Math.floor(Math.random() * SIZE_VARIANTS.length)];
+  return { ...base, size: base.size * variant.scale };
+}
+
+// 上:10%、下・左・右:各30%（4方向）
+const EDGE_POOL = [
+  ...Array(1).fill('top'),
+  ...Array(3).fill('bottom'),
+  ...Array(3).fill('left'),
+  ...Array(3).fill('right'),
+];
+
+// 下・左・右の3方向（均等）
+const EDGE3_POOL = ['bottom', 'left', 'right'];
+
+// 生き物ごとのアニメーション種別
+// edge: 4方向ランダム / edge3: 下・左・右の3方向 / top: 上のみ / fadein: 画面内フェードイン
+const CREATURE_ANIM = {
+  // デフォルトテーマ
+  spider: 'top',
+  eye:    'fadein',
+  ghost:  'fadein',
+  // フラワーテーマ
+  rose:      'edge',
+  tulip:     'edge',
+  cherry:    'fadein',
+  sunflower: 'fadein',
+  bouquet:   'top',
+  // おしゃれテーマ
+  diamond: 'fadein',
+  sparkle: 'fadein',
+  ring:    'fadein',
+  sheart:  'fadein',
+  ribbon:  'fadein',
+  // 海の生き物テーマ
+  jellyfish: 'fadein',
+  fish:      'edge',
+  squid:     'fadein',
+  octopus2:  'edge',
+  dolphin:   'edge3',
+  // 森の生き物テーマ
+  squirrel: 'top',
+  monkey:   'top',
+  bear:     'edge3',
+  raccoon:  'edge',
+  owl:      'fadein',
+  // サバンナの生き物テーマ
+  lion:     'edge3',
+  giraffe:  'edge',
+  elephant: 'edge3',
+  zebra:    'edge',
+  flamingo: 'fadein',
+};
+function getAnimMode(id) { return CREATURE_ANIM[id] || 'edge'; }
+
+
+// vp: { x, y, w, h } — creature spawn viewport
+function getEdgeSetup(edge, size, vp) {
+  const { x: VX, y: VY, w: VW, h: VH } = vp;
+  switch (edge) {
+    case 'top':    return { initTop: VY - size,    initLeft: VX + Math.random() * (VW - size), enterTo: { top:  VY + 10 } };
+    case 'bottom': return {
+      // clampBottom=true（フレームモード）時はパネル上端から開始、falseはビューポート外から開始
+      initTop:  vp.clampBottom ? VY + VH - size : VY + VH,
+      initLeft: VX + Math.random() * (VW - size),
+      enterTo:  { top: VY + VH - size - 10 },
+    };
+    case 'left':   return { initTop: VY + Math.random() * (VH - size), initLeft: VX - size,    enterTo: { left: VX + 10 } };
+    case 'right':  return { initTop: VY + Math.random() * (VH - size), initLeft: VX + VW,      enterTo: { left: VX + VW - size - 10 } };
+  }
+}
+
+const FULL_VP = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H };
+
+function CreatureOverlay({ creature, mode, edge, onDone, posRef, onCapturable, onUncapturable, vp }) {
+  const viewport = vp ?? FULL_VP;
+  const isFade   = mode === 'fadein';
+  const edgeSetup = isFade ? null : getEdgeSetup(edge, creature.size, viewport);
+  const initTop  = isFade ? viewport.y + 20 + Math.random() * Math.max(10, viewport.h - creature.size - 40) : edgeSetup.initTop;
+  const initLeft = isFade ? viewport.x + 20 + Math.random() * Math.max(10, viewport.w - creature.size - 40) : edgeSetup.initLeft;
+  const enterTo  = isFade ? null : edgeSetup.enterTo;
+
+  const topAnim     = useRef(new Animated.Value(initTop)).current;
+  const leftAnim    = useRef(new Animated.Value(initLeft)).current;
+  const scaleAnim   = useRef(new Animated.Value(1)).current;
+  const opacityAnim = useRef(new Animated.Value(isFade ? 0 : 1)).current;
+
+  useEffect(() => {
+    posRef.current = { top: initTop, left: initLeft };
+    const tl = topAnim.addListener(({ value })  => { posRef.current.top  = value; });
+    const ll = leftAnim.addListener(({ value }) => { posRef.current.left = value; });
+    let alive = true;
+
+    const middle = Animated.sequence([
+      Animated.delay(1500),
+      Animated.sequence([
+        Animated.timing(scaleAnim, { toValue: 1.3, duration: 200, useNativeDriver: false }),
+        Animated.timing(scaleAnim, { toValue: 1.0, duration: 200, useNativeDriver: false }),
+      ]),
+      Animated.delay(800),
+    ]);
+
+    if (isFade) {
+      Animated.timing(opacityAnim, { toValue: 1, duration: 600, useNativeDriver: false })
+        .start(({ finished }) => {
+          if (!finished || !alive) return;
+          onCapturable?.();
+          middle.start(({ finished }) => {
+            if (!finished || !alive) return;
+            onUncapturable?.();
+            Animated.timing(opacityAnim, { toValue: 0, duration: 400, useNativeDriver: false })
+              .start(({ finished }) => { if (finished && alive) onDone(); });
+          });
+        });
+    } else {
+      const enterAnims = [];
+      if (enterTo.top  !== undefined) enterAnims.push(Animated.timing(topAnim,  { toValue: enterTo.top,  duration: 600, useNativeDriver: false }));
+      if (enterTo.left !== undefined) enterAnims.push(Animated.timing(leftAnim, { toValue: enterTo.left, duration: 600, useNativeDriver: false }));
+      Animated.parallel(enterAnims).start(({ finished }) => {
+        if (!finished || !alive) return;
+        onCapturable?.();
+        middle.start(({ finished }) => {
+          if (!finished || !alive) return;
+          onUncapturable?.();
+          const exitAnim = edge === 'top' || edge === 'bottom'
+            ? Animated.timing(topAnim,  { toValue: initTop,  duration: 400, useNativeDriver: false })
+            : Animated.timing(leftAnim, { toValue: initLeft, duration: 400, useNativeDriver: false });
+          exitAnim.start(({ finished }) => { if (finished && alive) onDone(); });
+        });
+      });
+    }
+
+    return () => {
+      alive = false;
+      topAnim.stopAnimation();
+      leftAnim.stopAnimation();
+      opacityAnim.stopAnimation();
+      scaleAnim.stopAnimation();
+      topAnim.removeListener(tl);
+      leftAnim.removeListener(ll);
+    };
+  }, []);
+
+  return (
+    <Animated.View style={[styles.creature, {
+      top: topAnim, left: leftAnim,
+      opacity: opacityAnim,
+      transform: [{ scale: scaleAnim }, ...(edge === 'left' ? [{ scaleX: -1 }] : [])],
+    }]}>
+      <Text style={{ fontSize: creature.size * 0.8 }}>{creature.emoji}</Text>
+    </Animated.View>
+  );
+}
+
+export default function App() {
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const cameraRef      = useRef(null);
+  const compositeRef   = useRef(null);
+  const creaturePosRef = useRef({ top: 0, left: 0 });
+
+  const [activeCreature, setActiveCreature] = useState(null);
+  const [compositing, setCompositing]       = useState(null);
+  const [successPhoto, setSuccessPhoto]     = useState(null);
+
+  // 'album' = CreatureCameraアルバムに保存 / 'default' = 通常保存 / null = 初期化中
+  const [saveMode, setSaveMode] = useState(null);
+
+  const [galleryVisible, setGalleryVisible]   = useState(false);
+  const [galleryAssets, setGalleryAssets]     = useState([]);
+  const [selectedIndex, setSelectedIndex]     = useState(null);
+  const [pendingIndex, setPendingIndex]       = useState(null);
+  const [primarySlot, setPrimarySlot]         = useState(0);
+  const [settingsVisible, setSettingsVisible] = useState(false);
+  const [theme, setTheme]                     = useState('default');
+  const [frameEnabled, setFrameEnabled]       = useState(true);
+  const [fullScreen, setFullScreen]           = useState(false);
+  // 取得済みテーマID一覧（デフォルトは常に含む）
+  const [unlockedThemes, setUnlockedThemes]   = useState(['default', 'flower', 'stylish']);
+  // テーマごとのフレーム残り使用回数（上限20、初期値0）
+  const [frameCounts, setFrameCounts]         = useState(INITIAL_FRAME_COUNTS);
+  const frameCountsRef = useRef(INITIAL_FRAME_COUNTS);
+  // 削除方式: 'oldest'=最も古い写真 / 'newest'=最後に撮影した写真
+  const [deleteMode, setDeleteMode]           = useState('oldest');
+  const deleteModeRef = useRef('oldest');
+  // 削除確認UI用（写真付きダイアログ）
+  const [pendingDelete, setPendingDelete]     = useState(null);
+
+  // ギャラリー選択モード
+  const [selectionMode, setSelectionMode]     = useState(false);
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState({});  // { id: true }
+  const [savedPhotoIds, setSavedPhotoIds]     = useState({});    // { id: true }
+  // フォトビューワー表示フラグ（アニメーション付きclose用）
+  const [viewerVisible, setViewerVisible]     = useState(false);
+  // 超過モード：起動時に上限超過を検知した場合にtrue
+  const [overflowMode, setOverflowMode]       = useState(false);
+
+  const timerRef             = useRef(null);
+  const capturableRef        = useRef(false);
+  const frameLoadResolveRef  = useRef(null);
+  const selectedIndexRef     = useRef(null);
+  const galleryCountRef      = useRef(0);
+  const slotX0               = useRef(new Animated.Value(0)).current;
+  const slotX1               = useRef(new Animated.Value(0)).current;
+  const isViewerAnimatingRef = useRef(false);
+  const triggerTransitionRef = useRef(null);
+  const primarySlotRef       = useRef(0);
+  const slotX                = [slotX0, slotX1];
+  // ギャラリーアニメーション
+  const gallerySlideY  = useRef(new Animated.Value(SCREEN_H)).current;
+  const galleryOpacity = useRef(new Animated.Value(0)).current;
+  // フォトビューワーclose アニメーション
+  const viewerSlideY   = useRef(new Animated.Value(0)).current;
+  const viewerOpacity  = useRef(new Animated.Value(1)).current;
+  // stale closure 対策 ref
+  const selectedPhotoIdsRef = useRef({});
+  const savedPhotoIdsRef    = useRef({});
+  const overflowModeRef     = useRef(false);
+
+  // カメラ許可取得後にメディアライブラリを初期化
+  useEffect(() => {
+    if (!cameraPermission?.granted) return;
+    initMediaLibrary();
+  }, [cameraPermission?.granted]);
+
+  async function initMediaLibrary() {
+    const perm = await MediaLibrary.requestPermissionsAsync(false);
+
+    if (perm.status !== 'granted') {
+      setSaveMode('none');
+      return;
+    }
+
+    const hasFullAccess = perm.accessPrivileges === 'all';
+
+    if (!hasFullAccess) {
+      setSaveMode('default');
+      return;
+    }
+
+    // 保存済み設定を読み込む
+    const saved = await loadSettings();
+
+    // 保存済み写真IDを読み込む
+    try {
+      const savedIdsJson = await AsyncStorage.getItem(SAVED_PHOTOS_KEY);
+      if (savedIdsJson) {
+        const ids = JSON.parse(savedIdsJson);
+        setSavedPhotoIds(ids);
+        savedPhotoIdsRef.current = ids;
+      }
+    } catch {}
+
+    if (saved !== null) {
+      // 設定あり → そのまま反映
+      const savedTheme = saved.theme || 'default';
+      setTheme(savedTheme);
+      const albumMode = saved.albumMode ? 'album' : 'default';
+      setSaveMode(albumMode);
+      setFrameEnabled(saved.frameEnabled !== false);
+      setFullScreen(saved.fullScreen !== false);
+      // unlockedThemes がない場合は後方互換として既存テーマ＋保存済みテーマを解放済みに
+      const defaultUnlocked = ['default', 'flower', 'stylish'];
+      if (savedTheme && !defaultUnlocked.includes(savedTheme)) defaultUnlocked.push(savedTheme);
+      setUnlockedThemes(saved.unlockedThemes || defaultUnlocked);
+      // frameCounts：ない場合は初期値0で補完
+      const loadedCounts = { ...INITIAL_FRAME_COUNTS, ...(saved.frameCounts || {}) };
+      setFrameCounts(loadedCounts);
+      frameCountsRef.current = loadedCounts;
+      // deleteMode
+      const loadedDeleteMode = saved.deleteMode || 'oldest';
+      setDeleteMode(loadedDeleteMode);
+      deleteModeRef.current = loadedDeleteMode;
+      // 起動時に上限チェック → 超過していれば超過モードをセット
+      const isOverflow = await checkAlbumLimitAtStartup(albumMode);
+      if (isOverflow) setOverflowMode(true);
+      return;
+    }
+
+    // DEBUG: 設定なし → 全テーマ解放済み・全フレーム回数5で初期化
+    const DEBUG_UNLOCKED = ALL_THEME_IDS;
+    const DEBUG_FRAME_COUNTS = Object.fromEntries(ALL_THEME_IDS.map(id => [id, 5]));
+    setUnlockedThemes(DEBUG_UNLOCKED);
+    setFrameCounts(DEBUG_FRAME_COUNTS);
+    frameCountsRef.current = DEBUG_FRAME_COUNTS;
+
+    // 設定なし → アルバムの有無で判定
+    const existingAlbum = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
+    if (existingAlbum) {
+      // アルバムあり → アルバムモードで開始（設定として保存）
+      setSaveMode('album');
+      persistSettings('default', true, true, false, DEBUG_UNLOCKED, DEBUG_FRAME_COUNTS, 'oldest');
+      const isOverflow = await checkAlbumLimitAtStartup('album');
+      if (isOverflow) setOverflowMode(true);
+      return;
+    }
+
+    // 設定なし・アルバムなし → 同意を求める
+    Alert.alert(
+      '📂 アルバムの作成',
+      '撮影した写真を「CreatureCamera」アルバムにまとめますか？\n「いいえ」を選ぶと通常のカメラロールに保存されます。',
+      [
+        { text: 'いいえ', style: 'cancel', onPress: () => {
+          setSaveMode('default');
+          persistSettings('default', false, true, false, DEBUG_UNLOCKED, DEBUG_FRAME_COUNTS, 'oldest');
+        }},
+        { text: 'はい', onPress: () => {
+          setSaveMode('album');
+          persistSettings('default', true, true, false, DEBUG_UNLOCKED, DEBUG_FRAME_COUNTS, 'oldest');
+        }},
+      ]
+    );
+  }
+
+  // 起動時アルバム上限チェック。上限超過なら true を返す。
+  async function checkAlbumLimitAtStartup(effectiveSaveMode) {
+    try {
+      let count = 0;
+      if (effectiveSaveMode === 'album') {
+        const album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
+        if (!album) return false;
+        const result = await MediaLibrary.getAssetsAsync({
+          album,
+          mediaType: MediaLibrary.MediaType.photo,
+          first: PHOTO_LIMIT + 1,
+        });
+        count = result.assets.length;
+      } else {
+        const result = await MediaLibrary.getAssetsAsync({
+          mediaType: MediaLibrary.MediaType.photo,
+          first: PHOTO_LIMIT + 1,
+        });
+        count = result.assets.length;
+      }
+      return count > PHOTO_LIMIT;
+    } catch {
+      return false;
+    }
+  }
+
+  // 写真の保存（saveModeに応じて切り替え）
+  async function savePicture(uri) {
+    if (saveMode === 'album') {
+      const asset = await MediaLibrary.createAssetAsync(uri);
+      const album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
+      if (album) {
+        await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+      } else {
+        await MediaLibrary.createAlbumAsync(ALBUM_NAME, asset, false);
+      }
+    } else {
+      await MediaLibrary.saveToLibraryAsync(uri);
+    }
+  }
+
+  const scheduleNextCreature = useCallback(() => {
+    const delay = 2000 + Math.random() * 6000;
+    timerRef.current = setTimeout(() => {
+      const creature = pickCreature(theme);
+      const mode     = getAnimMode(creature.id);
+      const edge     = mode === 'fadein' ? null
+                     : mode === 'top'    ? 'top'
+                     : mode === 'edge3'  ? EDGE3_POOL[Math.floor(Math.random() * EDGE3_POOL.length)]
+                     : EDGE_POOL[Math.floor(Math.random() * EDGE_POOL.length)];
+      // フレームモード時は生き物の出現範囲をビューポートに限定
+      const vp = fullScreen
+        ? { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H }
+        : { x: 10, y: 20, w: SCREEN_W - 20, h: CAMERA_AREA_H - 20, clampBottom: true };
+      setActiveCreature({ creature, mode, edge, key: Date.now(), vp });
+    }, delay);
+  }, [theme, fullScreen]);
+
+  useEffect(() => {
+    scheduleNextCreature();
+    return () => clearTimeout(timerRef.current);
+  }, [scheduleNextCreature]);
+
+  // 超過モード検知時：ダイアログを表示してからギャラリーを開く
+  useEffect(() => {
+    if (overflowMode && saveMode !== null) {
+      Alert.alert(
+        '📂 アルバムがいっぱいです',
+        `アルバム内の写真が${PHOTO_LIMIT}枚を超えています。\nギャラリーから写真を削除してください。`,
+        [{ text: 'OK', onPress: () => openGallery() }]
+      );
+    }
+  }, [overflowMode, saveMode]);
+
+  const handleCreatureDone = useCallback(() => {
+    capturableRef.current = false;
+    setActiveCreature(null);
+    scheduleNextCreature();
+  }, [scheduleNextCreature]);
+
+  const takePicture = async () => {
+    if (!cameraRef.current || compositing || saveMode === null) return;
+    const creatureSnapshot = activeCreature
+      ? { creature: activeCreature.creature, pos: { ...creaturePosRef.current }, edge: activeCreature.edge }
+      : null;
+
+    // 生き物が撮影可能な状態（入場完了〜退場開始前）でなければ撮影しない
+    if (!capturableRef.current) {
+      Alert.alert('生き物がいません！', '生き物が現れたら撮影してね 👀');
+      return;
+    }
+
+    try {
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.9 });
+      // フレームは「有効 かつ 残り回数 > 0」の場合のみ使用
+      const frameSource = (frameEnabled && (frameCountsRef.current[theme] ?? 0) > 0)
+        ? (THEME_FRAMES[theme] ?? null) : null;
+      setCompositing({ photoUri: photo.uri, creatureSnapshot, frameSource, usedFrameTheme: frameSource ? theme : null });
+    } catch (e) {
+      Alert.alert('エラー', '撮影に失敗しました');
+    }
+  };
+
+  useEffect(() => {
+    if (!compositing || !compositeRef.current) return;
+    const run = async () => {
+      try {
+        await new Promise(r => setTimeout(r, 100));
+        if (compositing.frameSource) {
+          // フレーム画像のonLoadを待つ（最大3秒）
+          await Promise.race([
+            new Promise(r => { frameLoadResolveRef.current = r; }),
+            new Promise(r => setTimeout(r, 3000)),
+          ]);
+        }
+        const uri = await captureRef(compositeRef, { format: 'jpg', quality: 0.9 });
+        await savePicture(uri);
+
+        // フレームを使った場合は残り回数を -1
+        if (compositing.usedFrameTheme) {
+          const tid = compositing.usedFrameTheme;
+          const newCounts = {
+            ...frameCountsRef.current,
+            [tid]: Math.max(0, (frameCountsRef.current[tid] ?? 0) - 1),
+          };
+          setFrameCounts(newCounts);
+          frameCountsRef.current = newCounts;
+          persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, newCounts, deleteMode);
+        }
+
+        // アルバム上限チェック（albumモードのみ）
+        let deletionCandidate = null;
+        if (saveMode === 'album') {
+          try {
+            const album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
+            if (album) {
+              const result = await MediaLibrary.getAssetsAsync({
+                album,
+                sortBy: MediaLibrary.SortBy.creationTime, // newest first
+                mediaType: MediaLibrary.MediaType.photo,
+                first: PHOTO_LIMIT + 2,
+              });
+              if (result.assets.length > PHOTO_LIMIT) {
+                // 'newest' → 一番新しい（今撮影した）写真 / 'oldest' → 一番古い写真
+                const targetAsset = deleteModeRef.current === 'newest'
+                  ? result.assets[0]
+                  : result.assets[result.assets.length - 1];
+                const info = await MediaLibrary.getAssetInfoAsync(targetAsset);
+                if (info.localUri) {
+                  deletionCandidate = { asset: targetAsset, localUri: info.localUri };
+                }
+              }
+            }
+          } catch { /* 上限チェック失敗は無視 */ }
+        }
+
+        setSuccessPhoto(uri);
+        Alert.alert('📸 保存しました！', '生き物と一緒に写真フォルダに保存されたよ！', [
+          { text: 'OK', onPress: () => {
+            setSuccessPhoto(null);
+            setCompositing(null);
+            // 削除確認が必要な場合はUIを表示
+            if (deletionCandidate) setPendingDelete(deletionCandidate);
+          }},
+        ]);
+      } catch (e) {
+        Alert.alert('エラー', '保存に失敗しました: ' + e.message);
+        setCompositing(null);
+      }
+    };
+    run();
+  }, [compositing]);
+
+  const openGallery = async () => {
+    if (saveMode === 'none') {
+      Alert.alert('写真へのアクセス許可がありません');
+      return;
+    }
+    try {
+      let assets;
+      if (saveMode === 'album') {
+        // CreatureCameraアルバムの写真のみ表示
+        const album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
+        if (!album) {
+          Alert.alert('まだ写真がありません', '撮影するとここに表示されます。');
+          return;
+        }
+        const result = await MediaLibrary.getAssetsAsync({
+          album,
+          sortBy: MediaLibrary.SortBy.creationTime,
+          mediaType: MediaLibrary.MediaType.photo,
+          first: overflowModeRef.current ? OVERFLOW_LIMIT : PHOTO_LIMIT,
+        });
+        assets = result.assets;
+      } else {
+        // defaultモード：カメラロール全体を表示
+        const result = await MediaLibrary.getAssetsAsync({
+          sortBy: MediaLibrary.SortBy.creationTime,
+          mediaType: MediaLibrary.MediaType.photo,
+          first: overflowModeRef.current ? OVERFLOW_LIMIT : PHOTO_LIMIT,
+        });
+        assets = result.assets;
+      }
+
+      // ph:// URIはImageで表示できないため localUri（file://）を取得する
+      // localUriがnullの写真は除外する
+      const assetsWithLocalUri = (await Promise.all(
+        assets.map(async (asset) => {
+          try {
+            const info = await MediaLibrary.getAssetInfoAsync(asset);
+            if (!info.localUri) return null;
+            return { id: asset.id, uri: info.localUri };
+          } catch {
+            return null;
+          }
+        })
+      )).filter(Boolean);
+
+      if (assetsWithLocalUri.length === 0) {
+        Alert.alert('表示できる写真がありません', '写真へのアクセス権限を確認してください。');
+        return;
+      }
+      setGalleryAssets(assetsWithLocalUri);
+      gallerySlideY.setValue(SCREEN_H);
+      galleryOpacity.setValue(0);
+      setGalleryVisible(true);
+      // Modal が描画された後にアニメーション開始
+      setTimeout(() => {
+        Animated.parallel([
+          Animated.timing(gallerySlideY, { toValue: 0,   duration: 280, useNativeDriver: true }),
+          Animated.timing(galleryOpacity, { toValue: 1,  duration: 200, useNativeDriver: true }),
+        ]).start();
+      }, 30);
+    } catch (e) {
+      Alert.alert('エラー', 'ギャラリーを開けませんでした: ' + e.message);
+    }
+  };
+
+  // ギャラリーを閉じるアニメーション（上スライド＋フェードアウト）
+  const closeGallery = useCallback(() => {
+    // 超過モード中は、まだ上限超過していれば閉じない
+    if (overflowModeRef.current && galleryCountRef.current > PHOTO_LIMIT) {
+      Alert.alert(
+        '📂 アルバムがいっぱいです',
+        `写真が${PHOTO_LIMIT}枚を超えています。\n${galleryCountRef.current - PHOTO_LIMIT}枚以上削除してから戻ってください。`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+    // 超過モードを解除してから閉じる
+    if (overflowModeRef.current) {
+      setOverflowMode(false);
+      overflowModeRef.current = false;
+    }
+    Animated.parallel([
+      Animated.timing(gallerySlideY,  { toValue: -SCREEN_H * 0.35, duration: 300, useNativeDriver: true }),
+      Animated.timing(galleryOpacity, { toValue: 0,                 duration: 300, useNativeDriver: true }),
+    ]).start(() => {
+      setGalleryVisible(false);
+      setSelectedIndex(null);
+      setPendingIndex(null);
+      setViewerVisible(false);
+      setSelectionMode(false);
+      setSelectedPhotoIds({});
+      selectedPhotoIdsRef.current = {};
+    });
+  }, []);
+
+  // フォトビューワーを閉じるアニメーション（上スライド＋フェードアウト）
+  const closeViewer = useCallback(() => {
+    Animated.parallel([
+      Animated.timing(viewerSlideY,  { toValue: -SCREEN_H * 0.35, duration: 300, useNativeDriver: true }),
+      Animated.timing(viewerOpacity, { toValue: 0,                  duration: 300, useNativeDriver: true }),
+    ]).start(() => {
+      // アニメーション完了：ビューワーは opacity=0 で不可視のまま維持。
+      // setValue によるリセットは openViewer 側でのみ行う。
+      // ここで setValue(1) を呼ぶと React のアンマウントより先にネイティブ側が
+      // 更新されてフラッシュするため、絶対に呼ばない。
+      setTimeout(() => {
+        setViewerVisible(false);
+        setSelectedIndex(null);
+        setPendingIndex(null);
+      }, 15);
+    });
+  }, []);
+
+  // refを常に最新値に同期
+  selectedIndexRef.current    = selectedIndex;
+  galleryCountRef.current     = galleryAssets.length;
+  primarySlotRef.current      = primarySlot;
+  frameCountsRef.current      = frameCounts;
+  deleteModeRef.current       = deleteMode;
+  selectedPhotoIdsRef.current = selectedPhotoIds;
+  savedPhotoIdsRef.current    = savedPhotoIds;
+  overflowModeRef.current     = overflowMode;
+
+  // ギャラリーから写真を開く（スロットを初期化）
+  const openViewer = (index) => {
+    primarySlotRef.current = 0;
+    setPrimarySlot(0);
+    slotX[0].setValue(0);
+    slotX[1].setValue(0);
+    viewerSlideY.setValue(0);
+    viewerOpacity.setValue(1);
+    setSelectedIndex(index);
+    setPendingIndex(null);
+    setViewerVisible(true);
+  };
+
+  // グリッドのタップ処理（選択モードか通常かで分岐）
+  const handlePhotoTap = (item, index) => {
+    if (selectionMode) {
+      setSelectedPhotoIds(prev => {
+        const next = { ...prev };
+        if (next[item.id]) delete next[item.id];
+        else next[item.id] = true;
+        return next;
+      });
+    } else {
+      openViewer(index);
+    }
+  };
+
+  // アニメーション付き画像切り替え
+  // direction: 1 = 右スワイプ（次）, -1 = 左スワイプ（前）
+  triggerTransitionRef.current = (newIndex, direction) => {
+    if (isViewerAnimatingRef.current) return;
+    isViewerAnimatingRef.current = true;
+
+    const primary   = primarySlotRef.current;
+    const secondary = 1 - primary;
+    const exitX     =  direction * SCREEN_W;  // primary が出て行く方向
+    const enterX    = -direction * SCREEN_W;  // secondary が入ってくる位置
+
+    // secondary スロットを画面外に配置してから次の画像をセット
+    slotX[secondary].setValue(enterX);
+    setPendingIndex(newIndex);
+
+    // 2枚を同時にスライド
+    Animated.parallel([
+      Animated.timing(slotX[primary],   { toValue: exitX, duration: 300, useNativeDriver: true }),
+      Animated.timing(slotX[secondary], { toValue: 0,     duration: 300, useNativeDriver: true }),
+    ]).start(() => {
+      // secondary が新しい primary になる（Animated.Value は移動済みのまま流用）
+      primarySlotRef.current = secondary;
+      setPrimarySlot(secondary);
+      setSelectedIndex(newIndex);
+      setPendingIndex(null);
+      isViewerAnimatingRef.current = false;
+    });
+  };
+
+  const photoViewerPan = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder:  () => true,
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderMove: (_, { dx }) => {
+        if (!isViewerAnimatingRef.current) {
+          slotX[primarySlotRef.current].setValue(dx);
+        }
+      },
+      onPanResponderRelease: (_, { dx, dy, vx, vy }) => {
+        if (isViewerAnimatingRef.current) return;
+        const absDx = Math.abs(dx);
+        const absDy = Math.abs(dy);
+        // 上スワイプ → 一覧に戻る
+        if (absDy > absDx && (dy < -50 || vy < -0.5)) {
+          slotX[primarySlotRef.current].setValue(0);
+          closeViewer();
+          return;
+        }
+        // 右スワイプ → 次
+        if (dx > 50 || vx > 0.5) {
+          const next = selectedIndexRef.current + 1;
+          if (next < galleryCountRef.current) {
+            triggerTransitionRef.current(next, 1);
+            return;
+          }
+        }
+        // 左スワイプ → 前
+        if (dx < -50 || vx < -0.5) {
+          const prev = selectedIndexRef.current - 1;
+          if (prev >= 0) {
+            triggerTransitionRef.current(prev, -1);
+            return;
+          }
+        }
+        // しきい値未満または端 → 元の位置に戻す
+        Animated.spring(slotX[primarySlotRef.current], { toValue: 0, useNativeDriver: true }).start();
+      },
+    })
+  ).current;
+
+  // テーマ変更（タイマー・生き物をリセットして設定を保存）
+  const handleThemeChange = (id) => {
+    clearTimeout(timerRef.current);
+    capturableRef.current = false;
+    setActiveCreature(null);
+    setTheme(id);
+    persistSettings(id, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, frameCounts, deleteMode);
+  };
+
+  // テーマ削除（取得フラグをOFF）
+  const handleThemeDelete = (id) => {
+    const label = THEMES.find(t => t.id === id)?.label ?? id;
+    Alert.alert(
+      'テーマを削除',
+      `「${label}」を削除しますか？\n再取得するまで使えなくなります。`,
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        { text: '削除', style: 'destructive', onPress: () => {
+          const newUnlocked = unlockedThemes.filter(tid => tid !== id);
+          setUnlockedThemes(newUnlocked);
+          // フレーム残り回数もクリア
+          const newCounts = { ...frameCounts, [id]: 0 };
+          setFrameCounts(newCounts);
+          frameCountsRef.current = newCounts;
+          const newTheme = theme === id ? 'default' : theme;
+          if (theme === id) {
+            clearTimeout(timerRef.current);
+            capturableRef.current = false;
+            setActiveCreature(null);
+            setTheme('default');
+          }
+          persistSettings(newTheme, saveMode === 'album', frameEnabled, fullScreen, newUnlocked, newCounts, deleteMode);
+        }},
+      ]
+    );
+  };
+
+  // フレームのトグル処理
+  const handleFrameToggle = (value) => {
+    if (value) {
+      // OFF→ON：全テーマの残り回数がすべて0なら確認ダイアログ
+      const allZero = Object.values(frameCounts).every(n => (n ?? 0) === 0);
+      if (allZero) {
+        Alert.alert(
+          'フレームの残りがありません',
+          'フレームを取得した場合に、自動でフレームを表示します\nよろしいですか？',
+          [
+            { text: 'キャンセル', style: 'cancel' },
+            { text: 'OK', onPress: () => {
+              setFrameEnabled(true);
+              persistSettings(theme, saveMode === 'album', true, fullScreen, unlockedThemes, frameCounts, deleteMode);
+            }},
+          ]
+        );
+        return;
+      }
+    }
+    setFrameEnabled(value);
+    persistSettings(theme, saveMode === 'album', value, fullScreen, unlockedThemes, frameCounts, deleteMode);
+  };
+
+  // 全画面トグル処理
+  const handleFullScreenToggle = (value) => {
+    setFullScreen(value);
+    persistSettings(theme, saveMode === 'album', frameEnabled, value, unlockedThemes, frameCounts, deleteMode);
+  };
+
+  // 削除方式の変更
+  const handleDeleteModeChange = (mode) => {
+    setDeleteMode(mode);
+    deleteModeRef.current = mode;
+    persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, frameCounts, mode);
+  };
+
+  // アルバムモードのトグル処理
+  const handleAlbumModeToggle = async (value) => {
+    if (!value) {
+      // ON→OFF：確認なしで即切替・保存
+      setSaveMode('default');
+      persistSettings(theme, false, frameEnabled, fullScreen, unlockedThemes, frameCounts, deleteMode);
+      return;
+    }
+
+    // OFF→ON：条件1・条件2を実際に試して確認
+    // 条件1: アルバムが存在する
+    // 条件2: アルバム内の写真が表示できる（APIが成功する）
+    let canUseAlbum = false;
+    try {
+      const album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
+      if (album) {
+        await MediaLibrary.getAssetsAsync({
+          album,
+          first: 1,
+          mediaType: MediaLibrary.MediaType.photo,
+        });
+        canUseAlbum = true;
+      }
+    } catch {
+      canUseAlbum = false;
+    }
+
+    if (canUseAlbum) {
+      setSaveMode('album');
+      persistSettings(theme, true, frameEnabled, fullScreen, unlockedThemes, frameCounts, deleteMode);
+    } else {
+      Alert.alert(
+        '権限の設定が必要です',
+        'アルバムモードを使用するには、写真へのフルアクセスを許可してください。\n\n設定 → アプリ → Expo Go → 写真 → フルアクセス',
+        [{ text: 'キャンセル', style: 'cancel' }]
+      );
+    }
+  };
+
+  // 選択モードの開始・終了
+  const enterSelectionMode = () => {
+    setSelectionMode(true);
+    setSelectedPhotoIds({});
+    selectedPhotoIdsRef.current = {};
+  };
+  const exitSelectionMode = () => {
+    setSelectionMode(false);
+    setSelectedPhotoIds({});
+    selectedPhotoIdsRef.current = {};
+  };
+
+  // 削除アクション（保存済みチェック付き）
+  const handleDeleteAction = () => {
+    const selectedIds = Object.keys(selectedPhotoIdsRef.current);
+    if (selectedIds.length === 0) return;
+    const savedIds = savedPhotoIdsRef.current;
+    const hasSaved = selectedIds.some(id => savedIds[id]);
+    if (hasSaved) {
+      Alert.alert(
+        '削除できません',
+        '保護済みの写真が含まれています。\n保護済みの写真を削除するには、先に保護を解除してください。',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+    Alert.alert(
+      '写真を削除',
+      `選択した${selectedIds.length}枚の写真を削除しますか？`,
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        { text: '削除', style: 'destructive', onPress: executeDelete },
+      ]
+    );
+  };
+
+  const executeDelete = async () => {
+    const selectedIds = Object.keys(selectedPhotoIdsRef.current);
+    try {
+      await MediaLibrary.deleteAssetsAsync(selectedIds);
+    } catch {}
+    exitSelectionMode();
+    // ギャラリーを再読み込み
+    await reloadGallery();
+  };
+
+  // 保護アクション
+  const handleProtectAction = () => {
+    const selectedIds = Object.keys(selectedPhotoIdsRef.current);
+    if (selectedIds.length === 0) return;
+    // 新たに保護される枚数（すでに保護済みは除く）
+    const newlyProtected = selectedIds.filter(id => !savedPhotoIdsRef.current[id]);
+    const currentCount   = Object.keys(savedPhotoIdsRef.current).length;
+    if (currentCount + newlyProtected.length > PROTECT_LIMIT) {
+      Alert.alert(
+        '保護できません',
+        `保護できる写真は${PROTECT_LIMIT}枚までです。選択しなおしてください。`,
+        [
+          { text: 'キャンセル', style: 'cancel' },
+          { text: 'はい', onPress: exitSelectionMode },
+        ]
+      );
+      return;
+    }
+    Alert.alert(
+      '写真を保護',
+      `選択した${selectedIds.length}枚の写真を保護しますか？\n保護された写真は削除できなくなります。`,
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        { text: 'はい', onPress: executeProtect },
+      ]
+    );
+  };
+
+  const executeProtect = async () => {
+    const selectedIds = Object.keys(selectedPhotoIdsRef.current);
+    const newSaved = { ...savedPhotoIdsRef.current };
+    selectedIds.forEach(id => { newSaved[id] = true; });
+    setSavedPhotoIds(newSaved);
+    savedPhotoIdsRef.current = newSaved;
+    await persistSavedPhotoIds(newSaved);
+    exitSelectionMode();
+  };
+
+  // 保護解除アクション
+  const handleUnprotectAction = () => {
+    const selectedIds = Object.keys(selectedPhotoIdsRef.current);
+    if (selectedIds.length === 0) return;
+    const hasProtected = selectedIds.some(id => savedPhotoIdsRef.current[id]);
+    if (!hasProtected) return;
+    Alert.alert(
+      '保護を解除',
+      '選択された写真の保護を解除し、削除可能となります。\nよろしいですか？',
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        { text: 'はい', onPress: executeUnprotect },
+      ]
+    );
+  };
+
+  const executeUnprotect = async () => {
+    const selectedIds = Object.keys(selectedPhotoIdsRef.current);
+    const newSaved = { ...savedPhotoIdsRef.current };
+    selectedIds.forEach(id => { delete newSaved[id]; });
+    setSavedPhotoIds(newSaved);
+    savedPhotoIdsRef.current = newSaved;
+    await persistSavedPhotoIds(newSaved);
+    exitSelectionMode();
+  };
+
+  // ギャラリー再読み込み（削除後に呼ぶ）
+  const reloadGallery = async () => {
+    try {
+      let assets;
+      const fetchLimit = overflowModeRef.current ? OVERFLOW_LIMIT : PHOTO_LIMIT;
+      if (saveMode === 'album') {
+        const album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
+        if (!album) { setGalleryAssets([]); return; }
+        const result = await MediaLibrary.getAssetsAsync({
+          album,
+          sortBy: MediaLibrary.SortBy.creationTime,
+          mediaType: MediaLibrary.MediaType.photo,
+          first: fetchLimit,
+        });
+        assets = result.assets;
+      } else {
+        const result = await MediaLibrary.getAssetsAsync({
+          sortBy: MediaLibrary.SortBy.creationTime,
+          mediaType: MediaLibrary.MediaType.photo,
+          first: fetchLimit,
+        });
+        assets = result.assets;
+      }
+      const assetsWithLocalUri = (await Promise.all(
+        assets.map(async (asset) => {
+          try {
+            const info = await MediaLibrary.getAssetInfoAsync(asset);
+            if (!info.localUri) return null;
+            return { id: asset.id, uri: info.localUri };
+          } catch { return null; }
+        })
+      )).filter(Boolean);
+      setGalleryAssets(assetsWithLocalUri);
+    } catch {}
+  };
+
+  if (!cameraPermission) return <View style={styles.center} />;
+
+  if (!cameraPermission.granted) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.permText}>カメラの許可が必要です</Text>
+        <TouchableOpacity style={styles.btn} onPress={requestCameraPermission}>
+          <Text style={styles.btnText}>許可する</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  // 共通のExitボタン押下ハンドラ
+  const onExitPress = () =>
+    Alert.alert(
+      'アプリの終了方法',
+      '画面下からスワイプアップして終了できます。\n\n設定ファイルをリセットしたい場合は「リセット」を押してください。次回起動時に初期設定から始まります。',
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        { text: 'リセット', style: 'destructive', onPress: async () => {
+          try {
+            await AsyncStorage.removeItem(SETTINGS_KEY);
+            Alert.alert('リセット完了', '設定ファイルを削除しました。');
+          } catch {
+            Alert.alert('エラー', '設定ファイルの削除に失敗しました。');
+          }
+        }},
+      ]
+    );
+
+  return (
+    <View style={styles.container}>
+      <StatusBar style="light" hidden />
+
+      {/* ── カメラ映像 ── */}
+      {fullScreen ? (
+        <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
+      ) : (
+        // フレームモード：上80%のみ
+        <View style={{ position: 'absolute', top: 0, left: 0, width: SCREEN_W, height: CAMERA_AREA_H }}>
+          <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
+        </View>
+      )}
+      {/* カメラファインダーフレームオーバーレイ（生き物より前面・コンポジット中は非表示） */}
+      {!fullScreen && !compositing && (
+        <Image
+          source={CAMERA_FINDER}
+          style={{ position: 'absolute', top: 20, left: 10, width: SCREEN_W - 20, height: CAMERA_AREA_H - 20, zIndex: 20 }}
+          resizeMode="stretch"
+          pointerEvents="none"
+        />
+      )}
+
+      {/* ── 生き物オーバーレイ ── */}
+      {activeCreature && !compositing && !successPhoto && (
+        <CreatureOverlay
+          key={activeCreature.key}
+          creature={activeCreature.creature}
+          mode={activeCreature.mode}
+          edge={activeCreature.edge}
+          vp={activeCreature.vp}
+          onDone={handleCreatureDone}
+          posRef={creaturePosRef}
+          onCapturable={() => { capturableRef.current = true; }}
+          onUncapturable={() => { capturableRef.current = false; }}
+        />
+      )}
+
+      {compositing && (
+        <View ref={compositeRef} style={StyleSheet.absoluteFill} collapsable={false}>
+          {compositing.frameSource ? (
+            <>
+              {/* 写真＋生き物を80%エリアに縮小して中央配置 */}
+              <View style={{
+                position: 'absolute',
+                top:    SCREEN_H * 0.05,
+                left:   SCREEN_W * 0.05,
+                width:  SCREEN_W * 0.9,
+                height: SCREEN_H * 0.9,
+                overflow: 'hidden',
+              }}>
+                <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+                {compositing.creatureSnapshot && (
+                  <View style={[styles.creature, {
+                    top:  compositing.creatureSnapshot.pos.top  - SCREEN_H * 0.05,
+                    left: compositing.creatureSnapshot.pos.left - SCREEN_W * 0.05,
+                    transform: compositing.creatureSnapshot.edge === 'left' ? [{ scaleX: -1 }] : [],
+                  }]}>
+                    <Text style={{ fontSize: compositing.creatureSnapshot.creature.size * 0.8 }}>
+                      {compositing.creatureSnapshot.creature.emoji}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              {/* フレームを最前面にフルサイズで配置 */}
+              <Image
+                source={compositing.frameSource}
+                style={{ position: 'absolute', top: 0, left: 0, width: SCREEN_W, height: SCREEN_H }}
+                resizeMode="stretch"
+                onLoad={() => { frameLoadResolveRef.current?.(); }}
+              />
+            </>
+          ) : (
+            <>
+              <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+              {compositing.creatureSnapshot && (
+                <View style={[styles.creature, {
+                  top:  compositing.creatureSnapshot.pos.top,
+                  left: compositing.creatureSnapshot.pos.left,
+                  transform: compositing.creatureSnapshot.edge === 'left' ? [{ scaleX: -1 }] : [],
+                }]}>
+                  <Text style={{ fontSize: compositing.creatureSnapshot.creature.size * 0.8 }}>
+                    {compositing.creatureSnapshot.creature.emoji}
+                  </Text>
+                </View>
+              )}
+            </>
+          )}
+        </View>
+      )}
+
+      {successPhoto && (
+        <Image source={{ uri: successPhoto }} style={StyleSheet.absoluteFill} resizeMode="contain" />
+      )}
+
+      {!compositing && (
+        fullScreen ? (
+          // ── 全画面モードのUI（従来通り）──
+          <>
+            <TouchableOpacity style={styles.exitBtn} onPress={onExitPress}>
+              <Text style={styles.exitText}>✕</Text>
+            </TouchableOpacity>
+            <View style={styles.shutterArea}>
+              <TouchableOpacity style={styles.shutterBtn} onPress={takePicture}>
+                <View style={styles.shutterInner} />
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity style={styles.galleryBtn} onPress={openGallery}>
+              <Text style={styles.galleryIcon}>🖼️</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.settingsBtn} onPress={() => setSettingsVisible(true)}>
+              <Text style={styles.settingsIcon}>⚙️</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          // ── フレームモードのUI（下部パネル）──
+          <>
+            {/* カメラエリア内の✕ボタン */}
+            <TouchableOpacity style={styles.exitBtn} onPress={onExitPress}>
+              <Text style={styles.exitText}>✕</Text>
+            </TouchableOpacity>
+            {/* 下部コントロールパネル */}
+            <View style={styles.controlPanel}>
+              {/* ギャラリー（左） */}
+              <TouchableOpacity style={styles.panelIconBtn} onPress={openGallery}>
+                <Text style={styles.panelIconText}>🖼️</Text>
+                <Text style={styles.panelLabel}>ギャラリー</Text>
+              </TouchableOpacity>
+              {/* シャッター（中央） */}
+              <TouchableOpacity style={styles.panelShutterBtn} onPress={takePicture}>
+                <View style={styles.panelShutterInner} />
+              </TouchableOpacity>
+              {/* 設定（右） */}
+              <TouchableOpacity style={styles.panelIconBtn} onPress={() => setSettingsVisible(true)}>
+                <Text style={styles.panelIconText}>⚙️</Text>
+                <Text style={styles.panelLabel}>設定</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )
+      )}
+
+      {/* 設定モーダル */}
+      <Modal visible={settingsVisible} animationType="slide" onRequestClose={() => setSettingsVisible(false)}>
+        <View style={styles.settingsContainer}>
+          {/* ヘッダー */}
+          <View style={styles.settingsHeader}>
+            <Text style={styles.settingsTitle}>設定</Text>
+            <TouchableOpacity onPress={() => setSettingsVisible(false)}>
+              <Text style={styles.settingsClose}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* テーマ */}
+          <View style={styles.settingsSection}>
+            <Text style={styles.settingsSectionLabel}>テーマ：</Text>
+            {THEMES.filter(t => unlockedThemes.includes(t.id)).map(t => {
+              const remaining = frameCounts[t.id] ?? 0;
+              return (
+                <View key={t.id} style={styles.themeRow}>
+                  <TouchableOpacity style={{ flex: 1 }} onPress={() => handleThemeChange(t.id)}>
+                    <Text style={styles.themeLabel}>{t.label}</Text>
+                    <Text style={styles.themeFrameCount}>
+                      フレーム残り：{remaining}回
+                    </Text>
+                  </TouchableOpacity>
+                  {theme === t.id && <Text style={styles.themeCheck}>✓</Text>}
+                  {t.deletable && (
+                    <TouchableOpacity
+                      style={styles.themeDeleteBtn}
+                      onPress={() => handleThemeDelete(t.id)}
+                    >
+                      <Text style={styles.themeDeleteText}>🗑</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              );
+            })}
+          </View>
+
+          <View style={styles.settingsDivider} />
+
+          {/* フレーム */}
+          <View style={styles.settingsSection}>
+            <Text style={styles.settingsSectionLabel}>フレーム：</Text>
+            <View style={styles.settingsRow}>
+              <Text style={styles.settingsRowLabel}>
+                {frameEnabled ? 'ON（テーマに合わせたフレームを合成）' : 'OFF'}
+              </Text>
+              <Switch
+                value={frameEnabled}
+                onValueChange={handleFrameToggle}
+                trackColor={{ false: '#555', true: '#4CD964' }}
+                thumbColor="#fff"
+              />
+            </View>
+          </View>
+
+          <View style={styles.settingsDivider} />
+
+          {/* アルバムモード */}
+          <View style={styles.settingsSection}>
+            <Text style={styles.settingsSectionLabel}>アルバムモード：</Text>
+            <View style={styles.settingsRow}>
+              <Text style={styles.settingsRowLabel}>
+                {saveMode === 'album' ? 'ON（CreatureCameraアルバムに保存）' : 'OFF（通常のカメラロールに保存）'}
+              </Text>
+              <Switch
+                value={saveMode === 'album'}
+                onValueChange={handleAlbumModeToggle}
+                disabled={saveMode === 'none'}
+                trackColor={{ false: '#555', true: '#4CD964' }}
+                thumbColor="#fff"
+              />
+            </View>
+            {saveMode === 'none' && (
+              <Text style={styles.settingsNote}>※ 写真へのアクセス許可がないため使用できません</Text>
+            )}
+          </View>
+
+          <View style={styles.settingsDivider} />
+
+          {/* アルバム上限超過時の削除方式（albumモードのみ） */}
+          {saveMode === 'album' && (
+            <>
+              <View style={styles.settingsDivider} />
+              <View style={styles.settingsSection}>
+                <Text style={styles.settingsSectionLabel}>写真上限（{PHOTO_LIMIT}枚）超過時の削除方式：</Text>
+                {[
+                  { id: 'oldest', label: '最も古い写真を削除（既定）' },
+                  { id: 'newest', label: '最後に撮影した写真を削除' },
+                ].map(opt => (
+                  <TouchableOpacity
+                    key={opt.id}
+                    style={styles.themeRow}
+                    onPress={() => handleDeleteModeChange(opt.id)}
+                  >
+                    <Text style={styles.themeLabel}>{opt.label}</Text>
+                    {deleteMode === opt.id && <Text style={styles.themeCheck}>✓</Text>}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </>
+          )}
+
+          <View style={styles.settingsDivider} />
+
+          {/* 基本画面モード */}
+          <View style={styles.settingsSection}>
+            <Text style={styles.settingsSectionLabel}>基本画面：</Text>
+            <View style={styles.settingsRow}>
+              <Text style={styles.settingsRowLabel}>
+                {fullScreen
+                  ? '全画面（生き物が画面全体に出現）'
+                  : 'カメラフレームあり（ファインダー内に出現）'}
+              </Text>
+              <Switch
+                value={fullScreen}
+                onValueChange={handleFullScreenToggle}
+                trackColor={{ false: '#555', true: '#4CD964' }}
+                thumbColor="#fff"
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* CreatureCameraアルバム一覧 */}
+      <Modal visible={galleryVisible} animationType="none" transparent onRequestClose={closeGallery}>
+        <Animated.View style={[styles.galleryModal, {
+          transform: [{ translateY: gallerySlideY }],
+          opacity: galleryOpacity,
+        }]}>
+          {/* ヘッダー */}
+          <View style={[styles.galleryHeader, selectionMode && styles.galleryHeaderSelection]}>
+            {selectionMode ? (
+              // 選択モード中ヘッダー
+              <>
+                <TouchableOpacity onPress={exitSelectionMode}>
+                  <Text style={styles.gallerySelectionExit}>選択解除</Text>
+                </TouchableOpacity>
+                <View style={styles.gallerySelectionActions}>
+                  <TouchableOpacity style={styles.galleryActionBtn} onPress={handleDeleteAction}>
+                    <Text style={styles.galleryActionText}>🗑</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.galleryActionBtn} onPress={handleUnprotectAction}>
+                    <Text style={[styles.galleryActionText, { color: '#f5a623' }]}>☆</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.galleryActionBtn} onPress={handleProtectAction}>
+                    <Text style={styles.galleryActionText}>⭐</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              // 通常ヘッダー
+              <>
+                <Text style={styles.galleryTitle}>
+                  {saveMode === 'album' ? 'CreatureCamera' : 'カメラロール'}
+                  {'  '}
+                  <Text style={[
+                    styles.galleryCount,
+                    overflowMode && galleryAssets.length > PHOTO_LIMIT && styles.galleryCountOverflow,
+                  ]}>
+                    {galleryAssets.filter(a => savedPhotoIds[a.id]).length}/{galleryAssets.length}
+                  </Text>
+                </Text>
+                <View style={styles.galleryHeaderRight}>
+                  <TouchableOpacity style={styles.galleryActionBtn} onPress={enterSelectionMode}>
+                    <Text style={styles.galleryActionText}>☑️</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={closeGallery}>
+                    <Text style={styles.galleryClose}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </View>
+
+          {/* グリッド */}
+          <FlatList
+            data={galleryAssets}
+            keyExtractor={item => item.id}
+            numColumns={3}
+            renderItem={({ item, index }) => {
+              const isSelected = !!selectedPhotoIds[item.id];
+              const isSaved    = !!savedPhotoIds[item.id];
+              return (
+                <TouchableOpacity onPress={() => handlePhotoTap(item, index)}>
+                  <View>
+                    <Image source={{ uri: item.uri }} style={styles.gridThumb} />
+                    {isSaved && (
+                      <View style={styles.gridProtectedBadge}>
+                        <Text style={styles.gridProtectedBadgeText}>★</Text>
+                      </View>
+                    )}
+                    {selectionMode && isSelected && (
+                      <View style={styles.gridSelectBadge}>
+                        <Text style={styles.gridSelectBadgeText}>✓</Text>
+                      </View>
+                    )}
+                    {selectionMode && !isSelected && (
+                      <View style={styles.gridSelectCircle} />
+                    )}
+                  </View>
+                </TouchableOpacity>
+              );
+            }}
+            ItemSeparatorComponent={() => <View style={{ height: 2 }} />}
+          />
+
+          {/* フォトビューワー（アニメーション付きclose） */}
+          {viewerVisible && selectedIndex !== null && (
+            <Animated.View style={[styles.photoViewer, {
+              transform: [{ translateY: viewerSlideY }],
+              opacity: viewerOpacity,
+            }]}>
+              {/* スロット0 */}
+              {(primarySlot === 0 ? selectedIndex : pendingIndex) !== null && galleryAssets[(primarySlot === 0 ? selectedIndex : pendingIndex)] && (
+                <Animated.View
+                  style={[StyleSheet.absoluteFill, { transform: [{ translateX: slotX[0] }] }]}
+                  {...(primarySlot === 0 ? photoViewerPan.panHandlers : {})}
+                >
+                  <Image
+                    source={{ uri: galleryAssets[primarySlot === 0 ? selectedIndex : pendingIndex].uri }}
+                    style={StyleSheet.absoluteFill}
+                    resizeMode="contain"
+                  />
+                </Animated.View>
+              )}
+              {/* スロット1 */}
+              {(primarySlot === 1 ? selectedIndex : pendingIndex) !== null && galleryAssets[(primarySlot === 1 ? selectedIndex : pendingIndex)] && (
+                <Animated.View
+                  style={[StyleSheet.absoluteFill, { transform: [{ translateX: slotX[1] }] }]}
+                  {...(primarySlot === 1 ? photoViewerPan.panHandlers : {})}
+                >
+                  <Image
+                    source={{ uri: galleryAssets[primarySlot === 1 ? selectedIndex : pendingIndex].uri }}
+                    style={StyleSheet.absoluteFill}
+                    resizeMode="contain"
+                  />
+                </Animated.View>
+              )}
+              {/* ✕ボタンとカウンター：アニメーション中は非表示 */}
+              {pendingIndex === null && (
+                <>
+                  <TouchableOpacity style={styles.viewerClose} onPress={closeViewer}>
+                    <Text style={styles.viewerCloseText}>✕</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.viewerCounter}>
+                    {selectedIndex + 1} / {galleryAssets.length}
+                  </Text>
+                </>
+              )}
+            </Animated.View>
+          )}
+        </Animated.View>
+      </Modal>
+
+      {/* ── 削除確認UI（写真付き） ── */}
+      {pendingDelete && (
+        <View style={styles.deleteOverlay}>
+          <Image
+            source={{ uri: pendingDelete.localUri }}
+            style={styles.deletePreviewPhoto}
+            resizeMode="contain"
+          />
+          <Text style={styles.deleteConfirmTitle}>アルバムがいっぱいです</Text>
+          <Text style={styles.deleteConfirmMsg}>この写真を削除してもいいですか？</Text>
+          <View style={styles.deleteConfirmBtns}>
+            <TouchableOpacity
+              style={styles.deleteConfirmBtn}
+              onPress={() => setPendingDelete(null)}
+            >
+              <Text style={styles.deleteConfirmBtnText}>いいえ</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.deleteConfirmBtn, styles.deleteConfirmBtnYes]}
+              onPress={async () => {
+                try {
+                  await MediaLibrary.deleteAssetsAsync([pendingDelete.asset.id]);
+                } catch {}
+                setPendingDelete(null);
+              }}
+            >
+              <Text style={[styles.deleteConfirmBtnText, { color: '#ff3b30' }]}>はい</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container:   { flex: 1, backgroundColor: '#000' },
+  center:      { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#000' },
+  permText:    { color: '#fff', fontSize: 16, marginBottom: 20 },
+  btn:         { backgroundColor: '#fff', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 },
+  btnText:     { fontSize: 16, fontWeight: 'bold' },
+  creature:    { position: 'absolute', zIndex: 10 },
+  exitBtn: {
+    position: 'absolute', top: 50, right: 20,
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    alignItems: 'center', justifyContent: 'center', zIndex: 20,
+  },
+  exitText:    { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  shutterArea: { position: 'absolute', bottom: 50, width: '100%', alignItems: 'center' },
+  shutterBtn: {
+    width: 75, height: 75, borderRadius: 37.5,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    borderWidth: 4, borderColor: '#fff',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  shutterInner: { width: 58, height: 58, borderRadius: 29, backgroundColor: '#fff' },
+  galleryBtn: {
+    position: 'absolute', bottom: 58, left: 30,
+    width: 58, height: 58, borderRadius: 8,
+    borderWidth: 2, borderColor: '#fff',
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  galleryIcon: { fontSize: 28 },
+  settingsBtn: {
+    position: 'absolute', bottom: 58, right: 30,
+    width: 58, height: 58, borderRadius: 8,
+    borderWidth: 2, borderColor: '#fff',
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  settingsIcon: { fontSize: 28 },
+  settingsContainer: { flex: 1, backgroundColor: '#1c1c1e' },
+  settingsHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingTop: 55, paddingHorizontal: 20, paddingBottom: 16,
+    borderBottomWidth: 1, borderBottomColor: '#333',
+  },
+  settingsTitle: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
+  settingsClose: { color: '#fff', fontSize: 22, fontWeight: 'bold' },
+  settingsSection: { paddingHorizontal: 20, paddingVertical: 16 },
+  settingsSectionLabel: { color: '#aaa', fontSize: 13, marginBottom: 10, textTransform: 'uppercase' },
+  settingsDivider: { height: 1, backgroundColor: '#333', marginHorizontal: 0 },
+  themeRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#2c2c2e',
+  },
+  themeLabel: { color: '#fff', fontSize: 16 },
+  themeFrameCount: { color: '#aaa', fontSize: 11, marginTop: 2 },
+  themeCheck: { color: '#4CD964', fontSize: 18, fontWeight: 'bold', marginRight: 8 },
+  themeDeleteBtn: {
+    paddingHorizontal: 8, paddingVertical: 4,
+    marginLeft: 4,
+  },
+  themeDeleteText: { fontSize: 18 },
+  settingsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  settingsRowLabel: { color: '#fff', fontSize: 15, flex: 1, marginRight: 12 },
+  settingsNote: { color: '#ff453a', fontSize: 12, marginTop: 8 },
+  galleryModal: { flex: 1, backgroundColor: '#000' },
+  galleryHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingTop: 55, paddingHorizontal: 20, paddingBottom: 12,
+    borderBottomWidth: 1, borderBottomColor: '#333',
+  },
+  galleryHeaderSelection: {
+    backgroundColor: '#2c2c2e',
+  },
+  galleryTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  galleryCount: { color: '#aaa', fontSize: 14, fontWeight: 'normal' },
+  galleryCountOverflow: { color: '#ff3b30', fontWeight: 'bold' },
+  galleryClose: { color: '#fff', fontSize: 22, fontWeight: 'bold', marginLeft: 16 },
+  galleryHeaderRight: { flexDirection: 'row', alignItems: 'center' },
+  gallerySelectionExit: { color: '#4CD964', fontSize: 15, fontWeight: '600' },
+  gallerySelectionActions: { flexDirection: 'row', gap: 8 },
+  galleryActionBtn: { padding: 6 },
+  galleryActionText: { fontSize: 24 },
+  gridThumb:    { width: THUMB_SIZE, height: THUMB_SIZE, margin: 1 },
+  gridSelectBadge: {
+    position: 'absolute', top: 4, right: 4,
+    width: 24, height: 24, borderRadius: 12,
+    backgroundColor: '#fff',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  gridSelectBadgeText: { color: '#000', fontSize: 14, fontWeight: 'bold' },
+  gridSelectCircle: {
+    position: 'absolute', top: 4, right: 4,
+    width: 24, height: 24, borderRadius: 12,
+    borderWidth: 2, borderColor: '#fff',
+    backgroundColor: 'rgba(0,0,0,0.3)',
+  },
+  gridProtectedBadge: {
+    position: 'absolute', bottom: 4, left: 4,
+    width: 20, height: 20, borderRadius: 10,
+    backgroundColor: '#f5a623',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  gridProtectedBadgeText: { color: '#fff', fontSize: 11, fontWeight: 'bold', lineHeight: 14 },
+  photoViewer: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000',
+  },
+  viewerClose: {
+    position: 'absolute', top: 55, right: 20,
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  viewerCloseText: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
+  viewerCounter: {
+    position: 'absolute', bottom: 40, alignSelf: 'center',
+    color: '#fff', fontSize: 14,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12,
+  },
+  // ── フレームモード：下部コントロールパネル ──
+  controlPanel: {
+    position: 'absolute',
+    bottom: 0, left: 0, right: 0,
+    height: PANEL_H,
+    zIndex: 30,
+    backgroundColor: '#0d0d0d',
+    borderTopWidth: 1,
+    borderTopColor: '#2a2a2a',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingHorizontal: 20,
+    // デジカメLCDらしい細い緑ラインをトップに
+    borderTopColor: '#1a3a1a',
+  },
+  panelIconBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 64,
+  },
+  panelIconText: { fontSize: 28 },
+  panelLabel: {
+    color: '#7aff7a',
+    fontSize: 10,
+    marginTop: 2,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+  },
+  panelShutterBtn: {
+    width: 72, height: 72, borderRadius: 36,
+    backgroundColor: '#222',
+    borderWidth: 3, borderColor: '#888',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOpacity: 0.6, shadowRadius: 6,
+  },
+  panelShutterInner: {
+    width: 56, height: 56, borderRadius: 28,
+    backgroundColor: '#ccc',
+    borderWidth: 1, borderColor: '#aaa',
+  },
+  // ── 削除確認UI ──
+  deleteOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.88)',
+    zIndex: 200,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  deletePreviewPhoto: {
+    width: SCREEN_W * 0.85,
+    height: SCREEN_H * 0.45,
+    marginBottom: 20,
+    borderRadius: 8,
+  },
+  deleteConfirmTitle: {
+    color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 6, textAlign: 'center',
+  },
+  deleteConfirmMsg: {
+    color: '#ccc', fontSize: 15, textAlign: 'center', marginBottom: 24,
+  },
+  deleteConfirmBtns: {
+    flexDirection: 'row', gap: 16,
+  },
+  deleteConfirmBtn: {
+    paddingHorizontal: 36, paddingVertical: 13,
+    borderRadius: 10, backgroundColor: '#2c2c2e',
+  },
+  deleteConfirmBtnYes: { backgroundColor: '#3a1212' },
+  deleteConfirmBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+});
