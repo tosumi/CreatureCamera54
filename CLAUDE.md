@@ -14,68 +14,131 @@ npx expo start --android # Android emulator
 
 ## Architecture
 
-Single-file app: all logic lives in `App.js` (~939 lines). No navigation library, no state management library.
+Single-file app: all logic lives in `App.js` (~1900 lines). No navigation library, no state management library.
 
 ### Core feature flow
 
 1. **Camera** (`CameraView` from expo-camera) fills the screen
-2. A timer schedules random **creature appearances** every 2–8 seconds
+2. A timer schedules random **creature appearances** every 2–8 seconds (2-stage lottery: 5% special item, 95% normal creature)
 3. A creature animates in → pauses → animates out; during the pause window, `capturableRef.current = true`
-4. Tapping shutter: only allowed when `capturableRef.current` is true → takes photo → creates compositing view → `captureRef` (react-native-view-shot) → saves to MediaLibrary
+4. Tapping shutter: `isTakingPictureRef` guards against rapid taps; only proceeds when capturable (or harmony active) → takes photo → compositing view → `captureRef` (react-native-view-shot) → saves to MediaLibrary
 5. Saved photos viewable in the built-in gallery modal
 
 ### Creature animation system
 
 - `CREATURE_ANIM` map: each creature id → animation mode (`edge` | `edge3` | `top` | `fadein`)
 - `CreatureOverlay` component handles all animation; uses `alive` flag + `stopAnimation()` in cleanup to prevent stale animation after theme switch
-- `onCapturable` / `onUncapturable` callbacks control the capture window (timing-based, not area-based)
-- `posRef` tracks live creature position for compositing
+- `onCapturable` / `onUncapturable` callbacks set both `capturableRef` and `creatureCapturable` state (the latter drives ScopeOverlay)
+- `posRef` tracks live creature position for compositing and scope tracking
+- Left-edge creatures get `scaleX: -1` transform (both live and in compositing)
+- Framed mode uses `clampBottom: true` viewport so bottom-entry creatures start at panel top edge
 
-### Photo compositing (frame mode)
+### Special items system
 
-When `frameEnabled`, the compositing view layers:
-1. Photo + creature at 90%x90% centered (offset by `SCREEN_W/H * 0.05`)
-2. Frame image (`THEME_FRAMES[theme]`) at full `SCREEN_W x SCREEN_H` on top
+Two-stage lottery in `scheduleNextCreature`:
+- 5% → special item (`isSpecial: true, itemType, itemLabel` on `activeCreature`)
+- 95% → normal creature
 
-The frame `Image` fires `onLoad` -> resolves `frameLoadResolveRef` -> then `captureRef` runs. Without waiting for `onLoad`, the frame renders black.
+4 item types (weighted: 10/40/20/30%):
 
-`setCompositing(null)` must be in the Alert OK handler (not `finally`) — otherwise the compositing view unmounts before the next photo can be composited.
+| Item | Effect |
+|---|---|
+| 🎁 新テーマ (`theme`) | Unlock random locked theme; if frame count < 5, reset to 5 |
+| 🌟 フレーム+5 (`frame`) | Current theme frame count +5 (max `FRAME_MAX=20`) |
+| 🎊 和気あいあい (`harmony`) | Activates `harmonyActive`; next shutter press adds 4 extra creatures to photo at 90° rotated positions |
+| 🔭 スコープ (`scope`) | Activates `scopeActive`; shows `ScopeOverlay` that floats → tracks creature → double-pulse zoom on capturable |
+
+Harmony rules:
+- Invalid (not consumed) when special item is captured
+- Count decrements on any shutter press, even without a capturable creature
+- 4 extra creature positions: 90°/180°/270°/360° rotation of main creature pos relative to screen center; out-of-bounds positions randomized
+- `harmonyEntries: [{ creature, pos }]` stored in compositing state
+
+Scope rules:
+- `ScopeOverlay` mounts with `key={activeCreature.key}` (remounts per creature)
+- Phase: `float` (drift) → `track` (follow creature at 150ms intervals) → `zoom` (1.9×pulse×2 then fade) → `done`
+- Only consumed (`scopeActive=false`) when a normal creature is captured while scope is active (`wasScope` field in compositing state)
+
+Effects applied in save Alert OK handler (after `setCompositing(null)`) via `setTimeout(..., 100)`.
+
+### Photo compositing
+
+When `frameEnabled` and frame count > 0, layers:
+1. Photo + creature (+ harmony creatures) at 90%×90% centered (offset by `SCREEN_W/H * 0.05`)
+2. Frame image (`THEME_FRAMES[theme]`) at full size on top
+
+Frame `Image` fires `onLoad` → resolves `frameLoadResolveRef` → then `captureRef` runs (black frame if skipped).
+
+`setCompositing(null)` must be in the Alert OK handler (not `finally`).
+
+`isTakingPictureRef` set `true` at shutter press, reset `false` in save Alert OK handler and all error catch blocks.
+
+### Album limit enforcement
+
+After each save (album mode only):
+- Fetch album count; if > `PHOTO_LIMIT`:
+  - `skipOverflowAlertRef.current = true` to suppress startup-overflow useEffect
+  - Set `overflowMode = true` (enables OVERFLOW_LIMIT fetch + blocks gallery close)
+  - Show "アルバムがいっぱいです" alert → OK → `openGallery()`
+
+Startup overflow check (album mode only): `checkAlbumLimitAtStartup` → `setOverflowMode(true)` → useEffect shows alert → `openGallery()`.
+
+`closeGallery` blocks close while `overflowModeRef.current && galleryCount > PHOTO_LIMIT` (album mode only).
 
 ### Gallery viewer (two-slot system)
 
 - `slotX[0]` and `slotX[1]` are two persistent `Animated.Value`s for horizontal position
 - `primarySlot` (state) and `primarySlotRef` (ref, synced every render) track which slot holds the current image
-- On swipe transition: secondary slot gets new image + positioned off-screen, both slide simultaneously, then `primarySlot` swaps — no value reset needed, preventing the flash artifact
-- `triggerTransitionRef.current` is reassigned every render to capture latest state (stale closure fix for PanResponder)
+- On swipe: secondary slot positioned off-screen, both slide simultaneously, then `primarySlot` swaps — prevents flash artifact
+- `triggerTransitionRef.current` reassigned every render (stale closure fix for PanResponder)
+- Viewer close: do NOT call `setValue` in `closeViewer` callback — causes native flash before React unmount; only reset in `openViewer`
+
+### Photo protection
+
+- `savedPhotoIds` (`AsyncStorage` key `@creature_camera_saved_photos`): `{ [assetId]: true }`
+- Max `PROTECT_LIMIT=15` protected photos
+- Grid badge: gold circle + white ★; selection header icons: ⭐ (protect) / ☆ (unprotect, gold color)
+- Protected photos cannot be deleted
 
 ### iOS MediaLibrary caveat
 
-`MediaLibrary.getAssetsAsync` returns `ph://` URIs on iOS, which `Image` cannot render. Must call `getAssetInfoAsync(asset)` to get `localUri` (`file://`). Assets without `localUri` are filtered out.
+`getAssetsAsync` returns `ph://` URIs; must call `getAssetInfoAsync(asset).localUri` for `file://`. Assets without `localUri` filtered out.
 
 ### Settings persistence
 
-`AsyncStorage` key: `creature_camera_settings` -> `{ theme, albumMode, frameEnabled }`
+`AsyncStorage` key `creature_camera_settings` → `{ theme, albumMode, frameEnabled, fullScreen, unlockedThemes, frameCounts }`
 
-Loaded on first media permission grant. If no saved settings and no existing album, asks user to create a "CreatureCamera" album.
+Initial values (no saved settings): `unlockedThemes: ['default']`, `frameCounts: { default: 5, others: 0 }`, `fullScreen: false`.
 
 ## Key constants
 
 | Constant | Value | Purpose |
 |---|---|---|
-| `ALBUM_NAME` | `'CreatureCamera'` | MediaLibrary album name |
-| `SIZE_VARIANTS` | 5x1.0, 3x1.2, 2x1.5 | Creature size distribution |
-| `EDGE_POOL` | top x1, bottom x3, left x3, right x3 | Edge appearance probability |
-| Creature delay | 2000-8000 ms | Random interval between appearances |
+| `PHOTO_LIMIT` | 20 | Album photo cap |
+| `OVERFLOW_LIMIT` | 50 | Fetch limit in overflow mode |
+| `PROTECT_LIMIT` | 15 | Max protected photos |
+| `FRAME_MAX` | 20 | Max frame uses per theme |
+| `SPECIAL_ITEM_CHANCE` | 0.05 | Special item appearance rate |
+| `CAMERA_AREA_H` | `SCREEN_H * 0.8` | Framed mode camera height |
+| `PANEL_H` | `SCREEN_H * 0.2` | Framed mode control panel height |
 
-## Assets
+## Z-index order (framed mode)
 
-- `assets/frame-default.png` — creature frame (default theme)
-- `assets/frame-flower.png` — floral frame (flower theme)
-- `assets/frame-stylish.png` — fantasy frame (stylish theme)
-- `assets/splash-icon.png` — splash screen (resizeMode: "cover", backgroundColor: "#1a0a00")
+`controlPanel` (30) > camera finder (20) > `ScopeOverlay` (15) > creatures (10) > camera (0)
 
-Note: Splash screen does not display in Expo Go — only in standalone builds.
+## Themes and assets
+
+6 themes: `default`, `flower`, `stylish`, `ocean`, `forest`, `savanna` — all defined in `THEMES` and `CREATURE_SETS`.
+
+Frame images: `assets/frame-{theme}.png` for all 6 themes.
+Camera finder overlay: `assets/camera-finder.png` (hidden during compositing).
+Splash: `assets/splash-icon.png` (resizeMode: "cover", backgroundColor: "#1a0a00") — only in standalone builds.
+
+## Stale closure patterns
+
+- `useCallback([])` functions access current values via refs: `saveModeRef`, `overflowModeRef`, `galleryCountRef`, `selectedPhotoIdsRef`, `savedPhotoIdsRef`, `harmonyActiveRef`, `scopeActiveRef`
+- All refs synced every render in the body of `App()`
 
 ## Hand over
 
-- read most recently file in './claude/handsover' directory to hands over. 
+- Read the most recent file in `./claude/` directory for session context.

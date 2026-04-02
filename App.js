@@ -37,9 +37,9 @@ const THEMES = [
 
 const SETTINGS_KEY = 'creature_camera_settings';
 const SAVED_PHOTOS_KEY = '@creature_camera_saved_photos';
-const PHOTO_LIMIT = 20;
-const OVERFLOW_LIMIT = 50; // 超過モード時の表示上限
-const PROTECT_LIMIT = 15;  // 保護できる写真の上限枚数
+const PHOTO_LIMIT = 30;
+const OVERFLOW_LIMIT = 80; // 超過モード時の表示上限
+const PROTECT_LIMIT = 20;  // 保護できる写真の上限枚数
 const FRAME_MAX = 20;      // フレーム残り回数の上限
 const SPECIAL_ITEM_CHANCE = 0.05; // 特殊アイテム出現確率（5%）
 const SPECIAL_ITEMS = [
@@ -92,9 +92,9 @@ async function loadSettings() {
   }
 }
 
-async function persistSettings(theme, albumMode, frameEnabled, fullScreen, unlockedThemes, frameCounts, deleteMode) {
+async function persistSettings(theme, albumMode, frameEnabled, fullScreen, unlockedThemes, frameCounts) {
   try {
-    await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify({ theme, albumMode, frameEnabled, fullScreen, unlockedThemes, frameCounts, deleteMode }));
+    await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify({ theme, albumMode, frameEnabled, fullScreen, unlockedThemes, frameCounts }));
   } catch {}
 }
 
@@ -135,7 +135,7 @@ const CREATURE_SETS = {
   ocean: [
     { id: 'jellyfish', emoji: '🪼', size: 70 },
     { id: 'fish',      emoji: '🐟', size: 60 },
-    { id: 'squid',     emoji: '🦑', size: 70 },
+    { id: 'whale',     emoji: '🐳', size: 90 },
     { id: 'octopus2',  emoji: '🐙', size: 80 },
     { id: 'dolphin',   emoji: '🐬', size: 85 },
   ],
@@ -201,7 +201,7 @@ const CREATURE_ANIM = {
   // 海の生き物テーマ
   jellyfish: 'fadein',
   fish:      'edge',
-  squid:     'fadein',
+  whale:     'edge',
   octopus2:  'edge',
   dolphin:   'edge3',
   // 森の生き物テーマ
@@ -224,15 +224,16 @@ function getAnimMode(id) { return CREATURE_ANIM[id] || 'edge'; }
 function getEdgeSetup(edge, size, vp) {
   const { x: VX, y: VY, w: VW, h: VH } = vp;
   switch (edge) {
-    case 'top':    return { initTop: VY - size,    initLeft: VX + Math.random() * (VW - size), enterTo: { top:  VY + 10 } };
+    case 'top':    return { initTop: VY - size,    initLeft: VX + Math.random() * (VW - size), enterTo: { top:  VY + size + 20 } };
     case 'bottom': return {
       // clampBottom=true（フレームモード）時はパネル上端から開始、falseはビューポート外から開始
       initTop:  vp.clampBottom ? VY + VH - size : VY + VH,
       initLeft: VX + Math.random() * (VW - size),
-      enterTo:  { top: VY + VH - size - 10 },
+      enterTo:  { top: vp.clampBottom ? VY + VH - size - 20 : VY + VH - 2 * size - 20 },
     };
-    case 'left':   return { initTop: VY + Math.random() * (VH - size), initLeft: VX - size,    enterTo: { left: VX + 10 } };
-    case 'right':  return { initTop: VY + Math.random() * (VH - size), initLeft: VX + VW,      enterTo: { left: VX + VW - size - 10 } };
+    // 左右は上下位置をビューポート中央1/3に限定
+    case 'left':   return { initTop: VY + VH / 3 + Math.random() * Math.max(0, VH / 3 - size), initLeft: VX - size,    enterTo: { left: VX + size + 20 } };
+    case 'right':  return { initTop: VY + VH / 3 + Math.random() * Math.max(0, VH / 3 - size), initLeft: VX + VW,      enterTo: { left: VX + VW - 2 * size - 20 } };
   }
 }
 
@@ -337,8 +338,13 @@ function ScopeOverlay({ posRef, creatureActive, capturable, onAnimComplete }) {
     let alive = true;
     const drift = () => {
       if (!alive || phaseRef.current !== 'float') return;
-      const tx = Math.random() * (SCREEN_W - SIZE);
-      const ty = Math.random() * (SCREEN_H - SIZE);
+      // 漂い範囲：画面中央50%面積に限定（各辺 sqrt(0.5) ≈ 70.7%）
+      const SW = SCREEN_W * Math.SQRT1_2;
+      const SH = SCREEN_H * Math.SQRT1_2;
+      const mx = (SCREEN_W - SW) / 2;
+      const my = (SCREEN_H - SH) / 2;
+      const tx = mx + Math.random() * Math.max(0, SW - SIZE);
+      const ty = my + Math.random() * Math.max(0, SH - SIZE);
       Animated.parallel([
         Animated.timing(leftAnim, { toValue: tx, duration: 1800 + Math.random() * 800, useNativeDriver: false }),
         Animated.timing(topAnim,  { toValue: ty, duration: 1800 + Math.random() * 800, useNativeDriver: false }),
@@ -419,8 +425,9 @@ export default function App() {
   const [selectedIndex, setSelectedIndex]     = useState(null);
   const [pendingIndex, setPendingIndex]       = useState(null);
   const [primarySlot, setPrimarySlot]         = useState(0);
-  const [settingsVisible, setSettingsVisible] = useState(false);
-  const [theme, setTheme]                     = useState('default');
+  const [settingsVisible, setSettingsVisible]   = useState(false);
+  const [themeDropdownOpen, setThemeDropdownOpen] = useState(false);
+  const [theme, setTheme]                       = useState('default');
   const [frameEnabled, setFrameEnabled]       = useState(true);
   const [fullScreen, setFullScreen]           = useState(false);
   // 取得済みテーマID一覧（デフォルトは常に含む）
@@ -428,11 +435,6 @@ export default function App() {
   // テーマごとのフレーム残り使用回数（上限20、初期値0）
   const [frameCounts, setFrameCounts]         = useState(INITIAL_FRAME_COUNTS);
   const frameCountsRef = useRef(INITIAL_FRAME_COUNTS);
-  // 削除方式: 'oldest'=最も古い写真 / 'newest'=最後に撮影した写真
-  const [deleteMode, setDeleteMode]           = useState('oldest');
-  const deleteModeRef = useRef('oldest');
-  // 削除確認UI用（写真付きダイアログ）
-  const [pendingDelete, setPendingDelete]     = useState(null);
 
   // ギャラリー選択モード
   const [selectionMode, setSelectionMode]     = useState(false);
@@ -450,7 +452,11 @@ export default function App() {
   const scopeActiveRef   = useRef(false);
 
   const timerRef             = useRef(null);
+  const isTakingPictureRef   = useRef(false); // 撮影〜保存完了までの多重入力防止
+  const skipOverflowAlertRef = useRef(false);  // コンポジット後の超過アラートと起動時アラートの重複防止
   const capturableRef        = useRef(false);
+  const lastCreatureIdRef    = useRef(null);  // 連続同生き物防止
+  const scheduleNextCreatureRef = useRef(null); // stale closure 対策
   const frameLoadResolveRef  = useRef(null);
   const selectedIndexRef     = useRef(null);
   const galleryCountRef      = useRef(0);
@@ -522,10 +528,6 @@ export default function App() {
       const loadedCounts = { ...INITIAL_FRAME_COUNTS, ...(saved.frameCounts || {}) };
       setFrameCounts(loadedCounts);
       frameCountsRef.current = loadedCounts;
-      // deleteMode
-      const loadedDeleteMode = saved.deleteMode || 'oldest';
-      setDeleteMode(loadedDeleteMode);
-      deleteModeRef.current = loadedDeleteMode;
       // 起動時に上限チェック（アルバムモードのみ）→ 超過していれば超過モードをセット
       if (albumMode === 'album') {
         const isOverflow = await checkAlbumLimitAtStartup(albumMode);
@@ -534,9 +536,9 @@ export default function App() {
       return;
     }
 
-    // DEBUG: 設定なし → 全テーマ解放済み・全フレーム回数5で初期化
-    const DEBUG_UNLOCKED = ALL_THEME_IDS;
-    const DEBUG_FRAME_COUNTS = Object.fromEntries(ALL_THEME_IDS.map(id => [id, 5]));
+    // 設定なし → デフォルトテーマのみ所持・フレーム5回で初期化
+    const DEBUG_UNLOCKED = ['default'];
+    const DEBUG_FRAME_COUNTS = Object.fromEntries(ALL_THEME_IDS.map(id => [id, id === 'default' ? 5 : 0]));
     setUnlockedThemes(DEBUG_UNLOCKED);
     setFrameCounts(DEBUG_FRAME_COUNTS);
     frameCountsRef.current = DEBUG_FRAME_COUNTS;
@@ -546,7 +548,7 @@ export default function App() {
     if (existingAlbum) {
       // アルバムあり → アルバムモードで開始（設定として保存）
       setSaveMode('album');
-      persistSettings('default', true, true, false, DEBUG_UNLOCKED, DEBUG_FRAME_COUNTS, 'oldest');
+      persistSettings('default', true, true, false, DEBUG_UNLOCKED, DEBUG_FRAME_COUNTS);
       const isOverflow = await checkAlbumLimitAtStartup('album');
       if (isOverflow) setOverflowMode(true);
       return;
@@ -559,11 +561,11 @@ export default function App() {
       [
         { text: 'いいえ', style: 'cancel', onPress: () => {
           setSaveMode('default');
-          persistSettings('default', false, true, false, DEBUG_UNLOCKED, DEBUG_FRAME_COUNTS, 'oldest');
+          persistSettings('default', false, true, false, DEBUG_UNLOCKED, DEBUG_FRAME_COUNTS);
         }},
         { text: 'はい', onPress: () => {
           setSaveMode('album');
-          persistSettings('default', true, true, false, DEBUG_UNLOCKED, DEBUG_FRAME_COUNTS, 'oldest');
+          persistSettings('default', true, true, false, DEBUG_UNLOCKED, DEBUG_FRAME_COUNTS);
         }},
       ]
     );
@@ -622,8 +624,13 @@ export default function App() {
         setActiveCreature({ creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, key: Date.now(), vp, isSpecial: true, itemType: item.type, itemLabel: item.label });
         return;
       }
-      // 2段階目：通常生き物抽選
-      const creature = pickCreature(theme);
+      // 2段階目：通常生き物抽選（直前と同じ生き物は1回リトライ）
+      let creature = pickCreature(theme);
+      if (creature.id === lastCreatureIdRef.current) {
+        const alt = pickCreature(theme);
+        if (alt.id !== creature.id) creature = alt;
+      }
+      lastCreatureIdRef.current = creature.id;
       const mode     = getAnimMode(creature.id);
       const edge     = mode === 'fadein' ? null
                      : mode === 'top'    ? 'top'
@@ -638,12 +645,13 @@ export default function App() {
     return () => clearTimeout(timerRef.current);
   }, [scheduleNextCreature]);
 
-  // 超過モード検知時：ダイアログを表示してからギャラリーを開く
+  // 超過モード検知時：ダイアログを表示してからギャラリーを開く（起動時のみ）
   useEffect(() => {
     if (overflowMode && saveMode !== null) {
+      if (skipOverflowAlertRef.current) { skipOverflowAlertRef.current = false; return; }
       Alert.alert(
-        '📂 アルバムがいっぱいです',
-        `アルバム内の写真が${PHOTO_LIMIT}枚を超えています。\nギャラリーから写真を削除してください。`,
+        '📷 写真が上限を超えています',
+        `写真が${PHOTO_LIMIT}枚を超えています。\nギャラリーから写真を削除してください。`,
         [{ text: 'OK', onPress: () => openGallery() }]
       );
     }
@@ -657,7 +665,7 @@ export default function App() {
   }, [scheduleNextCreature]);
 
   const takePicture = async () => {
-    if (!cameraRef.current || compositing || saveMode === null) return;
+    if (isTakingPictureRef.current || !cameraRef.current || compositing || saveMode === null) return;
 
     const isSpecialCapture = !!(activeCreature?.isSpecial && capturableRef.current);
     const hasHarmony = harmonyActiveRef.current && !isSpecialCapture;
@@ -668,8 +676,52 @@ export default function App() {
       return;
     }
 
+    // 特殊アイテム撮影：写真保存なし・生き物を消去して直接効果を適用
+    if (isSpecialCapture) {
+      capturableRef.current = false;
+      setCreatureCapturable(false);
+      setActiveCreature(null);
+      scheduleNextCreature();
+      const itype = activeCreature.itemType;
+      if (itype === 'theme') {
+        const locked = ALL_THEME_IDS.filter(id => !unlockedThemes.includes(id));
+        if (locked.length > 0) {
+          const newId = locked[Math.floor(Math.random() * locked.length)];
+          const newUnlocked = [...unlockedThemes, newId];
+          setUnlockedThemes(newUnlocked);
+          const newCounts = { ...frameCountsRef.current };
+          if ((newCounts[newId] ?? 0) < 5) newCounts[newId] = 5;
+          setFrameCounts(newCounts);
+          frameCountsRef.current = newCounts;
+          persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, newUnlocked, newCounts);
+          const label = THEMES.find(t => t.id === newId)?.label ?? newId;
+          Alert.alert('🎁 新しいテーマ！', `「${label}」を取得しました！`);
+        } else {
+          Alert.alert('🎁 テーマ', 'すでにすべてのテーマを取得済みです！');
+        }
+      } else if (itype === 'frame') {
+        const newCount = Math.min(FRAME_MAX, (frameCountsRef.current[theme] ?? 0) + 5);
+        const newCounts = { ...frameCountsRef.current, [theme]: newCount };
+        setFrameCounts(newCounts);
+        frameCountsRef.current = newCounts;
+        persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, newCounts);
+        Alert.alert('🌟 フレーム回数+5！', `フレームの残り回数が${newCount}回になりました！`);
+      } else if (itype === 'harmony') {
+        setHarmonyActive(true);
+        harmonyActiveRef.current = true;
+        Alert.alert('🎊 和気あいあい！', '次の撮影で生き物たちが集まります！');
+      } else if (itype === 'scope') {
+        setScopeActive(true);
+        scopeActiveRef.current = true;
+        Alert.alert('🔭 スコープ！', '生き物の登場場所がわかるようになりました！');
+      }
+      return;
+    }
+
+    isTakingPictureRef.current = true;
+
     const creatureSnapshot = (activeCreature && capturableRef.current)
-      ? { creature: activeCreature.creature, pos: { ...creaturePosRef.current }, edge: activeCreature.edge, isSpecial: activeCreature.isSpecial, itemType: activeCreature.itemType }
+      ? { creature: activeCreature.creature, pos: { ...creaturePosRef.current }, edge: activeCreature.edge }
       : null;
 
     // 和気あいあい：使用回数を消費し、4体分のポジションと生き物を生成
@@ -691,6 +743,7 @@ export default function App() {
         ? (THEME_FRAMES[theme] ?? null) : null;
       setCompositing({ photoUri: photo.uri, creatureSnapshot, frameSource, usedFrameTheme: frameSource ? theme : null, harmonyEntries, wasScope });
     } catch (e) {
+      isTakingPictureRef.current = false;
       Alert.alert('エラー', '撮影に失敗しました');
     }
   };
@@ -719,31 +772,21 @@ export default function App() {
           };
           setFrameCounts(newCounts);
           frameCountsRef.current = newCounts;
-          persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, newCounts, deleteMode);
+          persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, newCounts);
         }
 
-        // アルバム上限チェック（albumモードのみ）
-        let deletionCandidate = null;
+        // 上限チェック（アルバムモードのみ）
+        let isOverLimit = false;
         if (saveMode === 'album') {
           try {
             const album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
             if (album) {
               const result = await MediaLibrary.getAssetsAsync({
                 album,
-                sortBy: MediaLibrary.SortBy.creationTime, // newest first
                 mediaType: MediaLibrary.MediaType.photo,
-                first: PHOTO_LIMIT + 2,
+                first: PHOTO_LIMIT + 1,
               });
-              if (result.assets.length > PHOTO_LIMIT) {
-                // 'newest' → 一番新しい（今撮影した）写真 / 'oldest' → 一番古い写真
-                const targetAsset = deleteModeRef.current === 'newest'
-                  ? result.assets[0]
-                  : result.assets[result.assets.length - 1];
-                const info = await MediaLibrary.getAssetInfoAsync(targetAsset);
-                if (info.localUri) {
-                  deletionCandidate = { asset: targetAsset, localUri: info.localUri };
-                }
-              }
+              isOverLimit = result.assets.length > PHOTO_LIMIT;
             }
           } catch { /* 上限チェック失敗は無視 */ }
         }
@@ -757,51 +800,31 @@ export default function App() {
         setSuccessPhoto(uri);
         Alert.alert('📸 保存しました！', '生き物と一緒に写真フォルダに保存されたよ！', [
           { text: 'OK', onPress: () => {
+            isTakingPictureRef.current = false;
             setSuccessPhoto(null);
             setCompositing(null);
-            if (deletionCandidate) setPendingDelete(deletionCandidate);
-            // 特殊アイテム効果を適用（保存ダイアログ後に実行）
-            const snap = compositing.creatureSnapshot;
-            if (snap?.isSpecial && snap?.itemType) {
-              const itype = snap.itemType;
+            // 撮影後：現在の生き物を即クリアしてシャッフル（連続同生き物防止）
+            clearTimeout(timerRef.current);
+            capturableRef.current = false;
+            setCreatureCapturable(false);
+            setActiveCreature(null);
+            scheduleNextCreatureRef.current?.();
+            if (isOverLimit) {
+              skipOverflowAlertRef.current = true;
+              setOverflowMode(true);
+              overflowModeRef.current = true;
               setTimeout(() => {
-                if (itype === 'theme') {
-                  const locked = ALL_THEME_IDS.filter(id => !unlockedThemes.includes(id));
-                  if (locked.length > 0) {
-                    const newId = locked[Math.floor(Math.random() * locked.length)];
-                    const newUnlocked = [...unlockedThemes, newId];
-                    setUnlockedThemes(newUnlocked);
-                    const newCounts = { ...frameCountsRef.current };
-                    if ((newCounts[newId] ?? 0) < 5) newCounts[newId] = 5;
-                    setFrameCounts(newCounts);
-                    frameCountsRef.current = newCounts;
-                    persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, newUnlocked, newCounts, deleteMode);
-                    const label = THEMES.find(t => t.id === newId)?.label ?? newId;
-                    Alert.alert('🎁 新しいテーマ！', `「${label}」を取得しました！`);
-                  } else {
-                    Alert.alert('🎁 テーマ', 'すでにすべてのテーマを取得済みです！');
-                  }
-                } else if (itype === 'frame') {
-                  const newCount = Math.min(FRAME_MAX, (frameCountsRef.current[theme] ?? 0) + 5);
-                  const newCounts = { ...frameCountsRef.current, [theme]: newCount };
-                  setFrameCounts(newCounts);
-                  frameCountsRef.current = newCounts;
-                  persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, newCounts, deleteMode);
-                  Alert.alert('🌟 フレーム回数+5！', `フレームの残り回数が${newCount}回になりました！`);
-                } else if (itype === 'harmony') {
-                  setHarmonyActive(true);
-                  harmonyActiveRef.current = true;
-                  Alert.alert('🎊 和気あいあい！', '次の撮影で生き物たちが集まります！');
-                } else if (itype === 'scope') {
-                  setScopeActive(true);
-                  scopeActiveRef.current = true;
-                  Alert.alert('🔭 スコープ！', '生き物の登場場所がわかるようになりました！');
-                }
-              }, 100);
+                Alert.alert(
+                  '📂 アルバムがいっぱいです',
+                  `写真を削除して${PHOTO_LIMIT}枚以下にしてください。`,
+                  [{ text: 'OK', onPress: () => openGallery() }]
+                );
+              }, 150);
             }
           }},
         ]);
       } catch (e) {
+        isTakingPictureRef.current = false;
         Alert.alert('エラー', '保存に失敗しました: ' + e.message);
         setCompositing(null);
       }
@@ -927,13 +950,13 @@ export default function App() {
   galleryCountRef.current     = galleryAssets.length;
   primarySlotRef.current      = primarySlot;
   frameCountsRef.current      = frameCounts;
-  deleteModeRef.current       = deleteMode;
   selectedPhotoIdsRef.current = selectedPhotoIds;
   savedPhotoIdsRef.current    = savedPhotoIds;
   overflowModeRef.current     = overflowMode;
   saveModeRef.current         = saveMode;
-  harmonyActiveRef.current    = harmonyActive;
-  scopeActiveRef.current      = scopeActive;
+  harmonyActiveRef.current      = harmonyActive;
+  scopeActiveRef.current        = scopeActive;
+  scheduleNextCreatureRef.current = scheduleNextCreature;
 
   // ギャラリーから写真を開く（スロットを初期化）
   const openViewer = (index) => {
@@ -1039,7 +1062,7 @@ export default function App() {
     capturableRef.current = false;
     setActiveCreature(null);
     setTheme(id);
-    persistSettings(id, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, frameCounts, deleteMode);
+    persistSettings(id, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, frameCounts);
   };
 
   // テーマ削除（取得フラグをOFF）
@@ -1064,7 +1087,7 @@ export default function App() {
             setActiveCreature(null);
             setTheme('default');
           }
-          persistSettings(newTheme, saveMode === 'album', frameEnabled, fullScreen, newUnlocked, newCounts, deleteMode);
+          persistSettings(newTheme, saveMode === 'album', frameEnabled, fullScreen, newUnlocked, newCounts);
         }},
       ]
     );
@@ -1083,7 +1106,7 @@ export default function App() {
             { text: 'キャンセル', style: 'cancel' },
             { text: 'OK', onPress: () => {
               setFrameEnabled(true);
-              persistSettings(theme, saveMode === 'album', true, fullScreen, unlockedThemes, frameCounts, deleteMode);
+              persistSettings(theme, saveMode === 'album', true, fullScreen, unlockedThemes, frameCounts);
             }},
           ]
         );
@@ -1091,28 +1114,22 @@ export default function App() {
       }
     }
     setFrameEnabled(value);
-    persistSettings(theme, saveMode === 'album', value, fullScreen, unlockedThemes, frameCounts, deleteMode);
+    persistSettings(theme, saveMode === 'album', value, fullScreen, unlockedThemes, frameCounts);
   };
 
   // 全画面トグル処理
   const handleFullScreenToggle = (value) => {
     setFullScreen(value);
-    persistSettings(theme, saveMode === 'album', frameEnabled, value, unlockedThemes, frameCounts, deleteMode);
+    persistSettings(theme, saveMode === 'album', frameEnabled, value, unlockedThemes, frameCounts);
   };
 
-  // 削除方式の変更
-  const handleDeleteModeChange = (mode) => {
-    setDeleteMode(mode);
-    deleteModeRef.current = mode;
-    persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, frameCounts, mode);
-  };
 
   // アルバムモードのトグル処理
   const handleAlbumModeToggle = async (value) => {
     if (!value) {
       // ON→OFF：確認なしで即切替・保存
       setSaveMode('default');
-      persistSettings(theme, false, frameEnabled, fullScreen, unlockedThemes, frameCounts, deleteMode);
+      persistSettings(theme, false, frameEnabled, fullScreen, unlockedThemes, frameCounts);
       return;
     }
 
@@ -1136,7 +1153,7 @@ export default function App() {
 
     if (canUseAlbum) {
       setSaveMode('album');
-      persistSettings(theme, true, frameEnabled, fullScreen, unlockedThemes, frameCounts, deleteMode);
+      persistSettings(theme, true, frameEnabled, fullScreen, unlockedThemes, frameCounts);
     } else {
       Alert.alert(
         '権限の設定が必要です',
@@ -1336,15 +1353,14 @@ export default function App() {
           <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
         </View>
       )}
-      {/* カメラファインダーフレームオーバーレイ（生き物より前面・コンポジット中は非表示） */}
-      {!fullScreen && !compositing && (
-        <Image
-          source={CAMERA_FINDER}
-          style={{ position: 'absolute', top: 20, left: 10, width: SCREEN_W - 20, height: CAMERA_AREA_H - 20, zIndex: 20 }}
-          resizeMode="stretch"
-          pointerEvents="none"
-        />
-      )}
+      {/* カメラファインダーフレームオーバーレイ（生き物より前面・コンポジット中は非表示）
+          常時マウントしてopacityで制御（全画面←→フレーム切替時のフラッシュ防止） */}
+      <Image
+        source={CAMERA_FINDER}
+        style={{ position: 'absolute', top: 20, left: 10, width: SCREEN_W - 20, height: CAMERA_AREA_H - 20, zIndex: 20, opacity: (!fullScreen && !compositing) ? 1 : 0 }}
+        resizeMode="stretch"
+        pointerEvents="none"
+      />
 
       {/* ── 生き物オーバーレイ ── */}
       {activeCreature && !compositing && !successPhoto && (
@@ -1502,25 +1518,30 @@ export default function App() {
             </TouchableOpacity>
           </View>
 
-          {/* テーマ */}
+          {/* テーマ（選択中のみ表示、タップでドロップダウン展開） */}
           <View style={styles.settingsSection}>
-            <Text style={styles.settingsSectionLabel}>テーマ：</Text>
-            {THEMES.filter(t => unlockedThemes.includes(t.id)).map(t => {
+            <TouchableOpacity onPress={() => setThemeDropdownOpen(o => !o)}>
+              <View style={styles.themeRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.settingsSectionLabel}>
+                    テーマ：<Text style={styles.themeLabel}>{THEMES.find(t => t.id === theme)?.label}</Text>
+                    {'  '}<Text style={{ fontSize: 12, color: '#aaa' }}>{themeDropdownOpen ? '▲' : '▼'}</Text>
+                  </Text>
+                  <Text style={styles.themeFrameCount}>フレーム残り：{frameCounts[theme] ?? 0}回</Text>
+                </View>
+                <Text style={styles.themeCheck}>✓</Text>
+              </View>
+            </TouchableOpacity>
+            {themeDropdownOpen && THEMES.filter(t => unlockedThemes.includes(t.id) && t.id !== theme).map(t => {
               const remaining = frameCounts[t.id] ?? 0;
               return (
-                <View key={t.id} style={styles.themeRow}>
-                  <TouchableOpacity style={{ flex: 1 }} onPress={() => handleThemeChange(t.id)}>
+                <View key={t.id} style={[styles.themeRow, { paddingLeft: 12 }]}>
+                  <TouchableOpacity style={{ flex: 1 }} onPress={() => { handleThemeChange(t.id); setThemeDropdownOpen(false); }}>
                     <Text style={styles.themeLabel}>{t.label}</Text>
-                    <Text style={styles.themeFrameCount}>
-                      フレーム残り：{remaining}回
-                    </Text>
+                    <Text style={styles.themeFrameCount}>フレーム残り：{remaining}回</Text>
                   </TouchableOpacity>
-                  {theme === t.id && <Text style={styles.themeCheck}>✓</Text>}
                   {t.deletable && (
-                    <TouchableOpacity
-                      style={styles.themeDeleteBtn}
-                      onPress={() => handleThemeDelete(t.id)}
-                    >
+                    <TouchableOpacity style={styles.themeDeleteBtn} onPress={() => handleThemeDelete(t.id)}>
                       <Text style={styles.themeDeleteText}>🗑</Text>
                     </TouchableOpacity>
                   )}
@@ -1533,10 +1554,10 @@ export default function App() {
 
           {/* フレーム */}
           <View style={styles.settingsSection}>
-            <Text style={styles.settingsSectionLabel}>フレーム：</Text>
             <View style={styles.settingsRow}>
-              <Text style={styles.settingsRowLabel}>
-                {frameEnabled ? 'ON（テーマに合わせたフレームを合成）' : 'OFF'}
+              <Text style={styles.settingsSectionLabel}>フレーム：</Text>
+              <Text style={[styles.settingsRowLabel, { flex: 1 }]}>
+                {frameEnabled ? 'あり' : 'なし'}
               </Text>
               <Switch
                 value={frameEnabled}
@@ -1551,10 +1572,10 @@ export default function App() {
 
           {/* アルバムモード */}
           <View style={styles.settingsSection}>
-            <Text style={styles.settingsSectionLabel}>アルバムモード：</Text>
             <View style={styles.settingsRow}>
-              <Text style={styles.settingsRowLabel}>
-                {saveMode === 'album' ? 'ON（CreatureCameraアルバムに保存）' : 'OFF（通常のカメラロールに保存）'}
+              <Text style={styles.settingsSectionLabel}>アルバムモード：</Text>
+              <Text style={[styles.settingsRowLabel, { flex: 1 }]}>
+                {saveMode === 'album' ? 'あり' : 'なし'}
               </Text>
               <Switch
                 value={saveMode === 'album'}
@@ -1571,43 +1592,16 @@ export default function App() {
 
           <View style={styles.settingsDivider} />
 
-          {/* アルバム上限超過時の削除方式（albumモードのみ） */}
-          {saveMode === 'album' && (
-            <>
-              <View style={styles.settingsDivider} />
-              <View style={styles.settingsSection}>
-                <Text style={styles.settingsSectionLabel}>写真上限（{PHOTO_LIMIT}枚）超過時の削除方式：</Text>
-                {[
-                  { id: 'oldest', label: '最も古い写真を削除（既定）' },
-                  { id: 'newest', label: '最後に撮影した写真を削除' },
-                ].map(opt => (
-                  <TouchableOpacity
-                    key={opt.id}
-                    style={styles.themeRow}
-                    onPress={() => handleDeleteModeChange(opt.id)}
-                  >
-                    <Text style={styles.themeLabel}>{opt.label}</Text>
-                    {deleteMode === opt.id && <Text style={styles.themeCheck}>✓</Text>}
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </>
-          )}
-
-          <View style={styles.settingsDivider} />
-
-          {/* 基本画面モード */}
+          {/* カメラフレーム（ON=フレームあり=!fullScreen） */}
           <View style={styles.settingsSection}>
-            <Text style={styles.settingsSectionLabel}>基本画面：</Text>
             <View style={styles.settingsRow}>
-              <Text style={styles.settingsRowLabel}>
-                {fullScreen
-                  ? '全画面（生き物が画面全体に出現）'
-                  : 'カメラフレームあり（ファインダー内に出現）'}
+              <Text style={styles.settingsSectionLabel}>カメラフレーム：</Text>
+              <Text style={[styles.settingsRowLabel, { flex: 1 }]}>
+                {fullScreen ? 'なし（全画面）' : 'あり'}
               </Text>
               <Switch
-                value={fullScreen}
-                onValueChange={handleFullScreenToggle}
+                value={!fullScreen}
+                onValueChange={(v) => handleFullScreenToggle(!v)}
                 trackColor={{ false: '#555', true: '#4CD964' }}
                 thumbColor="#fff"
               />
@@ -1747,37 +1741,6 @@ export default function App() {
         </Animated.View>
       </Modal>
 
-      {/* ── 削除確認UI（写真付き） ── */}
-      {pendingDelete && (
-        <View style={styles.deleteOverlay}>
-          <Image
-            source={{ uri: pendingDelete.localUri }}
-            style={styles.deletePreviewPhoto}
-            resizeMode="contain"
-          />
-          <Text style={styles.deleteConfirmTitle}>アルバムがいっぱいです</Text>
-          <Text style={styles.deleteConfirmMsg}>この写真を削除してもいいですか？</Text>
-          <View style={styles.deleteConfirmBtns}>
-            <TouchableOpacity
-              style={styles.deleteConfirmBtn}
-              onPress={() => setPendingDelete(null)}
-            >
-              <Text style={styles.deleteConfirmBtnText}>いいえ</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.deleteConfirmBtn, styles.deleteConfirmBtnYes]}
-              onPress={async () => {
-                try {
-                  await MediaLibrary.deleteAssetsAsync([pendingDelete.asset.id]);
-                } catch {}
-                setPendingDelete(null);
-              }}
-            >
-              <Text style={[styles.deleteConfirmBtnText, { color: '#ff3b30' }]}>はい</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
     </View>
   );
 }
@@ -1944,33 +1907,4 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#aaa',
   },
   // ── 削除確認UI ──
-  deleteOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.88)',
-    zIndex: 200,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-  },
-  deletePreviewPhoto: {
-    width: SCREEN_W * 0.85,
-    height: SCREEN_H * 0.45,
-    marginBottom: 20,
-    borderRadius: 8,
-  },
-  deleteConfirmTitle: {
-    color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 6, textAlign: 'center',
-  },
-  deleteConfirmMsg: {
-    color: '#ccc', fontSize: 15, textAlign: 'center', marginBottom: 24,
-  },
-  deleteConfirmBtns: {
-    flexDirection: 'row', gap: 16,
-  },
-  deleteConfirmBtn: {
-    paddingHorizontal: 36, paddingVertical: 13,
-    borderRadius: 10, backgroundColor: '#2c2c2e',
-  },
-  deleteConfirmBtnYes: { backgroundColor: '#3a1212' },
-  deleteConfirmBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
 });
