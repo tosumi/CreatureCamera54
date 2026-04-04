@@ -13,6 +13,7 @@ import {
   View,
   Alert,
 } from 'react-native';
+import { Audio } from 'expo-av';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as MediaLibrary from 'expo-media-library';
 import { captureRef } from 'react-native-view-shot';
@@ -24,7 +25,20 @@ const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const THUMB_SIZE = (SCREEN_W - 4) / 3;
 const CAMERA_AREA_H = SCREEN_H * 0.8; // framed mode: camera area height
 const PANEL_H       = SCREEN_H * 0.2; // framed mode: control panel height
-const CAMERA_FINDER = require('./assets/camera-finder.png');
+const CAMERA_FINDER  = require('./assets/camera-finder.png');
+const SE_SWITCH_ON     = require('./assets/se_switch_on.mp3');
+const SE_SWITCH_OFF    = require('./assets/se_switch_off.mp3');
+const SE_DELETE        = require('./assets/se_delete.mp3');
+const SE_ITEM_THEME    = require('./assets/se_item_theme.mp3');
+const SE_ITEM_FRAME    = require('./assets/se_item_frame.mp3');
+const SE_ITEM_SCOPE    = require('./assets/se_item_scope.mp3');
+const SE_ITEM_HARMONY  = require('./assets/se_item_harmony.mp3');
+const SE_HARMONY_PHOTO = require('./assets/se_harmony_photo.mp3');
+const SE_NO_CREATURE   = require('./assets/se_no_creature.mp3');
+const SE_OPEN_CABINET  = require('./assets/se_open_cabinet.mp3');
+const SE_CLOSE_CABINET = require('./assets/se_close_cabinet.mp3');
+const SE_BUTTON01A     = require('./assets/se_button01a.mp3');
+const BGM_MAIN         = require('./assets/bgm_main.mp3');
 
 const THEMES = [
   { id: 'default', label: 'デフォルト',        deletable: false },
@@ -38,6 +52,7 @@ const THEMES = [
 const SETTINGS_KEY      = 'creature_camera_settings';
 const SAVED_PHOTOS_KEY  = '@creature_camera_saved_photos';
 const AUTO_DELETE_KEY   = '@creature_camera_auto_delete';
+const AUDIO_SETTINGS_KEY = '@creature_camera_audio';
 const PHOTO_LIMIT = 30;
 const OVERFLOW_LIMIT = 80; // 超過モード時の表示上限
 const PROTECT_LIMIT = 20;  // 保護できる写真の上限枚数
@@ -49,23 +64,40 @@ const SPECIAL_ITEMS = [
   { type: 'harmony', weight: 20, emoji: '🎊', label: '和気あいあい' },
   { type: 'scope',   weight: 30, emoji: '🔭', label: 'スコープ' },
 ];
-function pickSpecialItem() {
-  const total = SPECIAL_ITEMS.reduce((s, i) => s + i.weight, 0);
+function pickSpecialItem(excludeTypes = []) {
+  const pool  = excludeTypes.length ? SPECIAL_ITEMS.filter(i => !excludeTypes.includes(i.type)) : SPECIAL_ITEMS;
+  const total = pool.reduce((s, i) => s + i.weight, 0);
   let r = Math.random() * total;
-  for (const item of SPECIAL_ITEMS) { r -= item.weight; if (r <= 0) return item; }
-  return SPECIAL_ITEMS[SPECIAL_ITEMS.length - 1];
+  for (const item of pool) { r -= item.weight; if (r <= 0) return item; }
+  return pool[pool.length - 1];
 }
-// 和気あいあい：画面中央50%面積の範囲にランダム配置
+// 和気あいあい：画面中央50%面積の範囲にランダム配置（生き物同士の重なり面積50%未満）
 function calculateHarmonyPositions(count, size) {
   const S  = size ?? 60;
   const SW = SCREEN_W * Math.SQRT1_2;
   const SH = SCREEN_H * Math.SQRT1_2;
   const mx = (SCREEN_W - SW) / 2;
   const my = (SCREEN_H - SH) / 2;
-  return Array.from({ length: count }, () => ({
-    left: mx + Math.random() * Math.max(0, SW - S),
-    top:  my + Math.random() * Math.max(0, SH - S),
-  }));
+  // 2つの配置が50%以上重なっているか判定（top-leftベースの正方形として計算）
+  const overlaps = (a, b) => {
+    const ox = Math.max(0, S - Math.abs(a.left - b.left));
+    const oy = Math.max(0, S - Math.abs(a.top  - b.top));
+    return ox * oy > 0.5 * S * S;
+  };
+  const positions = [];
+  for (let i = 0; i < count; i++) {
+    let pos;
+    let tries = 0;
+    do {
+      pos = {
+        left: mx + Math.random() * Math.max(0, SW - S),
+        top:  my + Math.random() * Math.max(0, SH - S),
+      };
+      tries++;
+    } while (tries < 50 && positions.some(p => overlaps(pos, p)));
+    positions.push(pos);
+  }
+  return positions;
 }
 
 // テーマ別フレーム画像（保存時のみ合成）
@@ -96,6 +128,12 @@ async function persistSettings(theme, albumMode, frameEnabled, fullScreen, unloc
 async function persistAutoDelete(autoDelete, autoDeleteTarget) {
   try {
     await AsyncStorage.setItem(AUTO_DELETE_KEY, JSON.stringify({ autoDelete, autoDeleteTarget }));
+  } catch {}
+}
+
+async function persistAudioSettings(bgmEnabled, seEnabled) {
+  try {
+    await AsyncStorage.setItem(AUDIO_SETTINGS_KEY, JSON.stringify({ bgmEnabled, seEnabled }));
   } catch {}
 }
 
@@ -463,10 +501,16 @@ export default function App() {
   const [creatureCapturable, setCreatureCapturable] = useState(false); // 現在の生き物が撮影可能か
   const [autoDelete, setAutoDelete]           = useState(false);        // 自動削除：有効/無効
   const [autoDeleteTarget, setAutoDeleteTarget] = useState('oldest');   // 'oldest' | 'newest'
+  const [bgmEnabled, setBgmEnabled]           = useState(true);         // BGM：あり/なし
+  const [seEnabled, setSeEnabled]             = useState(true);         // SE：あり/なし
   const harmonyActiveRef   = useRef(false);
   const scopeActiveRef     = useRef(false);
   const autoDeleteRef      = useRef(false);
   const autoDeleteTargetRef = useRef('oldest');
+  const bgmEnabledRef      = useRef(true);
+  const seEnabledRef       = useRef(true);
+  const bgmSoundRef        = useRef(null);
+  const scopeCountRef      = useRef(0);  // スコープ残り使用回数
 
   const timerRef             = useRef(null);
   const isTakingPictureRef   = useRef(false); // 撮影〜保存完了までの多重入力防止
@@ -495,6 +539,11 @@ export default function App() {
   const savedPhotoIdsRef    = useRef({});
   const overflowModeRef     = useRef(false);
   const saveModeRef         = useRef(null);
+
+  // 起動時にAudioモードを設定（iOSサイレントモードでも再生）
+  useEffect(() => {
+    Audio.setAudioModeAsync({ playsInSilentModeIOS: true }).catch(() => {});
+  }, []);
 
   // カメラ許可取得後にメディアライブラリを初期化
   useEffect(() => {
@@ -529,6 +578,16 @@ export default function App() {
         setAutoDeleteTarget(ad.autoDeleteTarget === 'newest' ? 'newest' : 'oldest');
         autoDeleteRef.current = ad.autoDelete === true;
         autoDeleteTargetRef.current = ad.autoDeleteTarget === 'newest' ? 'newest' : 'oldest';
+      }
+    } catch {}
+
+    // 音声設定を読み込む
+    try {
+      const audioJson = await AsyncStorage.getItem(AUDIO_SETTINGS_KEY);
+      if (audioJson) {
+        const audio = JSON.parse(audioJson);
+        if (audio.bgmEnabled === false) { setBgmEnabled(false); bgmEnabledRef.current = false; }
+        if (audio.seEnabled  === false) { setSeEnabled(false);  seEnabledRef.current  = false; }
       }
     } catch {}
 
@@ -648,9 +707,10 @@ export default function App() {
       const vp = fullScreen
         ? { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H }
         : { x: 10, y: 20, w: SCREEN_W - 20, h: CAMERA_AREA_H - 20, clampBottom: true };
-      // 1段階目：特殊アイテム抽選（5%）
-      if (Math.random() < SPECIAL_ITEM_CHANCE) {
-        const item = pickSpecialItem();
+      // 1段階目：特殊アイテム抽選（和気あいあい発動中はスキップ）
+      if (!harmonyActiveRef.current && Math.random() < SPECIAL_ITEM_CHANCE) {
+        // スコープ残り2回以上の場合はスコープを除外して再抽選
+        const item = pickSpecialItem(scopeCountRef.current >= 2 ? ['scope'] : []);
         setActiveCreature({ creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, key: Date.now(), vp, isSpecial: true, itemType: item.type, itemLabel: item.label });
         return;
       }
@@ -702,12 +762,21 @@ export default function App() {
 
     // 和気あいあい発動中は生き物なしでも撮影可能。それ以外は撮影可能状態が必要。
     if (!capturableRef.current && !hasHarmony) {
+      playSE(SE_NO_CREATURE);
       Alert.alert('生き物がいません！', '生き物が現れたら撮影してね 👀');
       return;
     }
 
     // 特殊アイテム撮影：写真保存なし・生き物を消去して直接効果を適用
     if (isSpecialCapture) {
+      // スコープ発動中かつスコープのパワーアップ以外の場合は使用回数を消費
+      if (scopeActiveRef.current && activeCreature.itemType !== 'scope') {
+        scopeCountRef.current = Math.max(0, scopeCountRef.current - 1);
+        if (scopeCountRef.current === 0) {
+          setScopeActive(false);
+          scopeActiveRef.current = false;
+        }
+      }
       capturableRef.current = false;
       setCreatureCapturable(false);
       setActiveCreature(null);
@@ -725,6 +794,7 @@ export default function App() {
           frameCountsRef.current = newCounts;
           persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, newUnlocked, newCounts);
           const label = THEMES.find(t => t.id === newId)?.label ?? newId;
+          playSE(SE_ITEM_THEME);
           Alert.alert('🎁 新しいテーマ！', `「${label}」を取得しました！`);
         } else {
           Alert.alert('🎁 テーマ', 'すでにすべてのテーマを取得済みです！');
@@ -735,15 +805,26 @@ export default function App() {
         setFrameCounts(newCounts);
         frameCountsRef.current = newCounts;
         persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, newCounts);
+        playSE(SE_ITEM_FRAME);
         Alert.alert('🌟 フレーム回数+5！', `フレームの残り回数が${newCount}回になりました！`);
       } else if (itype === 'harmony') {
         setHarmonyActive(true);
         harmonyActiveRef.current = true;
+        playSE(SE_ITEM_HARMONY);
         Alert.alert('🎊 和気あいあい！', '次の撮影で生き物たちが集まります！');
       } else if (itype === 'scope') {
-        setScopeActive(true);
-        scopeActiveRef.current = true;
-        Alert.alert('🔭 スコープ！', '生き物の登場場所がわかるようになりました！');
+        if (scopeActiveRef.current) {
+          // パワーアップ：使用回数を5回にリセット
+          scopeCountRef.current = 5;
+          playSE(SE_ITEM_SCOPE);
+          Alert.alert('🔭 スコープ、パワーアップ！', 'スコープが連続5回使えます。');
+        } else {
+          setScopeActive(true);
+          scopeActiveRef.current = true;
+          scopeCountRef.current = 1;
+          playSE(SE_ITEM_SCOPE);
+          Alert.alert('🔭 スコープ！', '生き物の登場場所がわかるようになりました！');
+        }
       }
       return;
     }
@@ -758,6 +839,7 @@ export default function App() {
     let harmonyEntries = null;
     if (hasHarmony) {
       const HARM_SIZE = 60;
+      playSE(SE_HARMONY_PHOTO);
       const positions = calculateHarmonyPositions(4, HARM_SIZE);
       harmonyEntries = positions.map(pos => ({ creature: pickCreature(theme), pos }));
       harmonyActiveRef.current = false;
@@ -807,8 +889,11 @@ export default function App() {
 
         // スコープ消費（通常生き物撮影時のみ）
         if (compositing.wasScope) {
-          setScopeActive(false);
-          scopeActiveRef.current = false;
+          scopeCountRef.current = Math.max(0, scopeCountRef.current - 1);
+          if (scopeCountRef.current === 0) {
+            setScopeActive(false);
+            scopeActiveRef.current = false;
+          }
         }
 
         setSuccessPhoto(uri);
@@ -1003,6 +1088,57 @@ export default function App() {
     });
   }, []);
 
+  // SE再生（seEnabled=trueの時のみ）
+  const playSE = useCallback(async (source) => {
+    if (!seEnabledRef.current) return;
+    try {
+      const { sound } = await Audio.Sound.createAsync(source);
+      await sound.playAsync();
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.didJustFinish) sound.unloadAsync();
+      });
+    } catch {}
+  }, []);
+
+  // SE有効化時専用：seEnabledRefに関わらず再生（OFF→ON切替時のフィードバック用）
+  const playRawSE = useCallback(async (source) => {
+    try {
+      const { sound } = await Audio.Sound.createAsync(source);
+      await sound.playAsync();
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.didJustFinish) sound.unloadAsync();
+      });
+    } catch {}
+  }, []);
+
+  // BGM管理：bgmEnabledが変わるたびに停止/再生
+  useEffect(() => {
+    let mounted = true;
+    const setupBGM = async () => {
+      if (bgmSoundRef.current) {
+        await bgmSoundRef.current.stopAsync().catch(() => {});
+        await bgmSoundRef.current.unloadAsync().catch(() => {});
+        bgmSoundRef.current = null;
+      }
+      if (!bgmEnabled) return;
+      try {
+        await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
+        const { sound } = await Audio.Sound.createAsync(BGM_MAIN, { isLooping: true, shouldPlay: true });
+        if (!mounted) { sound.unloadAsync(); return; }
+        bgmSoundRef.current = sound;
+      } catch {}
+    };
+    setupBGM();
+    return () => {
+      mounted = false;
+      if (bgmSoundRef.current) {
+        bgmSoundRef.current.stopAsync().catch(() => {});
+        bgmSoundRef.current.unloadAsync().catch(() => {});
+        bgmSoundRef.current = null;
+      }
+    };
+  }, [bgmEnabled]);
+
   // refを常に最新値に同期
   selectedIndexRef.current    = selectedIndex;
   galleryCountRef.current     = galleryAssets.length;
@@ -1016,6 +1152,8 @@ export default function App() {
   scopeActiveRef.current          = scopeActive;
   autoDeleteRef.current           = autoDelete;
   autoDeleteTargetRef.current     = autoDeleteTarget;
+  bgmEnabledRef.current           = bgmEnabled;
+  seEnabledRef.current            = seEnabled;
   scheduleNextCreatureRef.current = scheduleNextCreature;
 
   // ギャラリーから写真を開く（スロットを初期化）
@@ -1134,6 +1272,7 @@ export default function App() {
       [
         { text: 'キャンセル', style: 'cancel' },
         { text: '削除', style: 'destructive', onPress: () => {
+          playSE(SE_DELETE);
           const newUnlocked = unlockedThemes.filter(tid => tid !== id);
           setUnlockedThemes(newUnlocked);
           // フレーム残り回数もクリア
@@ -1155,6 +1294,7 @@ export default function App() {
 
   // フレームのトグル処理
   const handleFrameToggle = (value) => {
+    playSE(value ? SE_SWITCH_ON : SE_SWITCH_OFF);
     if (value) {
       // OFF→ON：全テーマの残り回数がすべて0なら確認ダイアログ
       const allZero = Object.values(frameCounts).every(n => (n ?? 0) === 0);
@@ -1179,6 +1319,8 @@ export default function App() {
 
   // 全画面トグル処理
   const handleFullScreenToggle = (value) => {
+    // カメラフレームON（=fullScreen OFF）→ SE_SWITCH_ON、カメラフレームOFF（=fullScreen ON）→ SE_SWITCH_OFF
+    playSE(value ? SE_SWITCH_OFF : SE_SWITCH_ON);
     setFullScreen(value);
     persistSettings(theme, saveMode === 'album', frameEnabled, value, unlockedThemes, frameCounts);
   };
@@ -1186,6 +1328,7 @@ export default function App() {
 
   // アルバムモードのトグル処理
   const handleAlbumModeToggle = async (value) => {
+    playSE(value ? SE_SWITCH_ON : SE_SWITCH_OFF);
     if (!value) {
       // ON→OFF：確認なしで即切替・保存
       setSaveMode('default');
@@ -1225,11 +1368,13 @@ export default function App() {
 
   // 選択モードの開始・終了
   const enterSelectionMode = () => {
+    playSE(SE_OPEN_CABINET);
     setSelectionMode(true);
     setSelectedPhotoIds({});
     selectedPhotoIdsRef.current = {};
   };
   const exitSelectionMode = () => {
+    playSE(SE_CLOSE_CABINET);
     setSelectionMode(false);
     setSelectedPhotoIds({});
     selectedPhotoIdsRef.current = {};
@@ -1264,6 +1409,7 @@ export default function App() {
     try {
       await MediaLibrary.deleteAssetsAsync(selectedIds);
     } catch {}
+    playSE(SE_DELETE);
     exitSelectionMode();
     // ギャラリーを再読み込み
     await reloadGallery();
@@ -1273,6 +1419,7 @@ export default function App() {
   const handleProtectAction = () => {
     const selectedIds = Object.keys(selectedPhotoIdsRef.current);
     if (selectedIds.length === 0) return;
+    playSE(SE_BUTTON01A);
     // 新たに保護される枚数（すでに保護済みは除く）
     const newlyProtected = selectedIds.filter(id => !savedPhotoIdsRef.current[id]);
     const currentCount   = Object.keys(savedPhotoIdsRef.current).length;
@@ -1313,6 +1460,7 @@ export default function App() {
     if (selectedIds.length === 0) return;
     const hasProtected = selectedIds.some(id => savedPhotoIdsRef.current[id]);
     if (!hasProtected) return;
+    playSE(SE_BUTTON01A);
     Alert.alert(
       '保護を解除',
       '選択された写真の保護を解除し、削除可能となります。\nよろしいですか？',
@@ -1585,7 +1733,11 @@ export default function App() {
           <View style={styles.settingsSection}>
             <Text style={styles.settingsSectionLabel}>テーマ：</Text>
             {/* 2行目：現在のテーマ表示＋ドロップダウントグル（折りたたみ時は削除アイコンなし） */}
-            <TouchableOpacity onPress={() => setThemeDropdownOpen(o => !o)}>
+            <TouchableOpacity onPress={() => {
+              const next = !themeDropdownOpen;
+              playSE(next ? SE_OPEN_CABINET : SE_CLOSE_CABINET);
+              setThemeDropdownOpen(next);
+            }}>
               <View style={[styles.settingsRow, { marginTop: 6 }]}>
                 <Text style={[styles.settingsRowLabel, { flex: 1 }]}>
                   {THEMES.find(t => t.id === theme)?.label}
@@ -1599,7 +1751,7 @@ export default function App() {
               const isSelected = t.id === theme;
               return (
                 <View key={t.id} style={[styles.themeRow, { paddingLeft: 12 }]}>
-                  <TouchableOpacity style={{ flex: 1 }} onPress={() => { handleThemeChange(t.id); setThemeDropdownOpen(false); }}>
+                  <TouchableOpacity style={{ flex: 1 }} onPress={() => { playSE(SE_BUTTON01A); handleThemeChange(t.id); setThemeDropdownOpen(false); }}>
                     <Text style={styles.themeLabel}>{t.label}</Text>
                     <Text style={styles.themeFrameCount}>フレーム残り：{remaining}回</Text>
                   </TouchableOpacity>
@@ -1666,7 +1818,11 @@ export default function App() {
                   </Text>
                   <Switch
                     value={autoDelete}
-                    onValueChange={(v) => { setAutoDelete(v); persistAutoDelete(v, autoDeleteTarget); }}
+                    onValueChange={(v) => {
+                      playSE(v ? SE_SWITCH_ON : SE_SWITCH_OFF);
+                      setAutoDelete(v);
+                      persistAutoDelete(v, autoDeleteTarget);
+                    }}
                     trackColor={{ false: '#555', true: '#4CD964' }}
                     thumbColor="#fff"
                   />
@@ -1680,13 +1836,13 @@ export default function App() {
                     <View style={[styles.settingsRow, { marginTop: 10, gap: 10 }]}>
                       <TouchableOpacity
                         style={[styles.autoDeleteBtn, autoDeleteTarget === 'newest' && styles.autoDeleteBtnActive]}
-                        onPress={() => { setAutoDeleteTarget('newest'); persistAutoDelete(autoDelete, 'newest'); }}
+                        onPress={() => { playSE(SE_BUTTON01A); setAutoDeleteTarget('newest'); persistAutoDelete(autoDelete, 'newest'); }}
                       >
                         <Text style={[styles.autoDeleteBtnText, autoDeleteTarget === 'newest' && styles.autoDeleteBtnTextActive]}>最新の写真</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={[styles.autoDeleteBtn, autoDeleteTarget === 'oldest' && styles.autoDeleteBtnActive]}
-                        onPress={() => { setAutoDeleteTarget('oldest'); persistAutoDelete(autoDelete, 'oldest'); }}
+                        onPress={() => { playSE(SE_BUTTON01A); setAutoDeleteTarget('oldest'); persistAutoDelete(autoDelete, 'oldest'); }}
                       >
                         <Text style={[styles.autoDeleteBtnText, autoDeleteTarget === 'oldest' && styles.autoDeleteBtnTextActive]}>最後の写真</Text>
                       </TouchableOpacity>
@@ -1709,6 +1865,56 @@ export default function App() {
               <Switch
                 value={!fullScreen}
                 onValueChange={(v) => handleFullScreenToggle(!v)}
+                trackColor={{ false: '#555', true: '#4CD964' }}
+                thumbColor="#fff"
+              />
+            </View>
+          </View>
+
+          <View style={styles.settingsDivider} />
+
+          {/* BGM */}
+          <View style={styles.settingsSection}>
+            <View style={styles.settingsRow}>
+              <Text style={styles.settingsSectionLabel}>BGM：</Text>
+              <Text style={[styles.settingsRowLabel, { flex: 1 }]}>
+                {bgmEnabled ? 'あり' : 'なし'}
+              </Text>
+              <Switch
+                value={bgmEnabled}
+                onValueChange={(v) => {
+                  playSE(v ? SE_SWITCH_ON : SE_SWITCH_OFF);
+                  setBgmEnabled(v);
+                  persistAudioSettings(v, seEnabled);
+                }}
+                trackColor={{ false: '#555', true: '#4CD964' }}
+                thumbColor="#fff"
+              />
+            </View>
+          </View>
+
+          <View style={styles.settingsDivider} />
+
+          {/* SE */}
+          <View style={styles.settingsSection}>
+            <View style={styles.settingsRow}>
+              <Text style={styles.settingsSectionLabel}>SE：</Text>
+              <Text style={[styles.settingsRowLabel, { flex: 1 }]}>
+                {seEnabled ? 'あり' : 'なし'}
+              </Text>
+              <Switch
+                value={seEnabled}
+                onValueChange={(v) => {
+                  if (v) {
+                    // OFF→ON：seEnabledRefがまだfalseなのでplayRawSEで直接再生
+                    playRawSE(SE_SWITCH_ON);
+                  } else {
+                    playSE(SE_SWITCH_OFF);
+                  }
+                  setSeEnabled(v);
+                  seEnabledRef.current = v;
+                  persistAudioSettings(bgmEnabled, v);
+                }}
                 trackColor={{ false: '#555', true: '#4CD964' }}
                 thumbColor="#fff"
               />
