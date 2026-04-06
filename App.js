@@ -13,7 +13,7 @@ import {
   View,
   Alert,
 } from 'react-native';
-import { Audio } from 'expo-av';
+import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as MediaLibrary from 'expo-media-library';
 import { captureRef } from 'react-native-view-shot';
@@ -38,7 +38,17 @@ const SE_NO_CREATURE   = require('./assets/se_no_creature.mp3');
 const SE_OPEN_CABINET  = require('./assets/se_open_cabinet.mp3');
 const SE_CLOSE_CABINET = require('./assets/se_close_cabinet.mp3');
 const SE_BUTTON01A     = require('./assets/se_button01a.mp3');
-const BGM_MAIN         = require('./assets/bgm_main.mp3');
+const BGM_MAIN         = require('./assets/bgm_default.mp3');
+
+// テーマ別BGM（未設定テーマは null = BGMなし）
+const THEME_BGM = {
+  default: BGM_MAIN,                               // もぐらの親子
+  flower:  require('./assets/bgm_flower.mp3'),     // 日日是好日
+  stylish: require('./assets/bgm_stylish.mp3'),    // お城の舞踏会
+  ocean:   require('./assets/bgm_ocean.mp3'),      // 粉雪のワルツ
+  forest:  require('./assets/bgm_forest.mp3'),     // おそうじ日和
+  savanna: require('./assets/bgm_main.mp3'),       // 電話をする人
+};
 
 const THEMES = [
   { id: 'default', label: 'デフォルト',        deletable: false },
@@ -507,9 +517,10 @@ export default function App() {
   const scopeActiveRef     = useRef(false);
   const autoDeleteRef      = useRef(false);
   const autoDeleteTargetRef = useRef('oldest');
-  const bgmEnabledRef      = useRef(true);
-  const seEnabledRef       = useRef(true);
-  const bgmSoundRef        = useRef(null);
+  const bgmEnabledRef         = useRef(true);
+  const seEnabledRef          = useRef(true);
+  const bgmSoundRef           = useRef(null);
+  const bgmIntentionalStopRef = useRef(false); // 意図的な停止フラグ（自動再開と区別）
   const scopeCountRef      = useRef(0);  // スコープ残り使用回数
 
   const timerRef             = useRef(null);
@@ -540,9 +551,17 @@ export default function App() {
   const overflowModeRef     = useRef(false);
   const saveModeRef         = useRef(null);
 
-  // 起動時にAudioモードを設定（iOSサイレントモードでも再生）
+  // 起動時にAudioモードを設定
+  // playsInSilentModeIOS: false → サイレントモード時はBGM/SE再生しない
+  // MixWithOthers → カメラシャッター時にBGMが止まらないようにする
   useEffect(() => {
-    Audio.setAudioModeAsync({ playsInSilentModeIOS: true }).catch(() => {});
+    Audio.setAudioModeAsync({
+      playsInSilentModeIOS: false,
+      interruptionModeIOS: InterruptionModeIOS.MixWithOthers,
+      staysActiveInBackground: false,
+      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+      shouldDuckAndroid: false,
+    }).catch(() => {});
   }, []);
 
   // カメラ許可取得後にメディアライブラリを初期化
@@ -1111,33 +1130,49 @@ export default function App() {
     } catch {}
   }, []);
 
-  // BGM管理：bgmEnabledが変わるたびに停止/再生
+  // BGM管理：bgmEnabled またはテーマが変わるたびに差し替え
   useEffect(() => {
     let mounted = true;
     const setupBGM = async () => {
+      // 既存BGMを意図的に停止
+      bgmIntentionalStopRef.current = true;
       if (bgmSoundRef.current) {
         await bgmSoundRef.current.stopAsync().catch(() => {});
         await bgmSoundRef.current.unloadAsync().catch(() => {});
         bgmSoundRef.current = null;
       }
-      if (!bgmEnabled) return;
+      const source = THEME_BGM[theme] ?? null;
+      if (!bgmEnabled || !source) return;
       try {
-        await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
-        const { sound } = await Audio.Sound.createAsync(BGM_MAIN, { isLooping: true, shouldPlay: true });
+        bgmIntentionalStopRef.current = false;
+        const { sound } = await Audio.Sound.createAsync(source, { isLooping: true, shouldPlay: true });
         if (!mounted) { sound.unloadAsync(); return; }
         bgmSoundRef.current = sound;
+        // カメラシャッターなどで予期せず停止した場合に自動再開
+        sound.setOnPlaybackStatusUpdate((status) => {
+          if (
+            status.isLoaded &&
+            !status.isPlaying &&
+            !status.didJustFinish &&
+            !bgmIntentionalStopRef.current &&
+            bgmEnabledRef.current
+          ) {
+            sound.playAsync().catch(() => {});
+          }
+        });
       } catch {}
     };
     setupBGM();
     return () => {
       mounted = false;
+      bgmIntentionalStopRef.current = true;
       if (bgmSoundRef.current) {
         bgmSoundRef.current.stopAsync().catch(() => {});
         bgmSoundRef.current.unloadAsync().catch(() => {});
         bgmSoundRef.current = null;
       }
     };
-  }, [bgmEnabled]);
+  }, [bgmEnabled, theme]);
 
   // refを常に最新値に同期
   selectedIndexRef.current    = selectedIndex;
@@ -1217,42 +1252,91 @@ export default function App() {
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder:  () => true,
       onPanResponderTerminationRequest: () => false,
-      onPanResponderMove: (_, { dx }) => {
-        if (!isViewerAnimatingRef.current) {
-          slotX[primarySlotRef.current].setValue(dx);
-        }
-      },
+      // 指の追従なし（上スワイプと同じく離した後に判定）
+      onPanResponderMove: () => {},
       onPanResponderRelease: (_, { dx, dy, vx, vy }) => {
         if (isViewerAnimatingRef.current) return;
         const absDx = Math.abs(dx);
         const absDy = Math.abs(dy);
         // 上スワイプ → 一覧に戻る
         if (absDy > absDx && (dy < -50 || vy < -0.5)) {
-          slotX[primarySlotRef.current].setValue(0);
           closeViewer();
           return;
         }
-        // 右スワイプ → 次
-        if (dx > 50 || vx > 0.5) {
+        // 左スワイプ → 次（方向を逆転）
+        if (dx < -50 || vx < -0.5) {
           const next = selectedIndexRef.current + 1;
           if (next < galleryCountRef.current) {
-            triggerTransitionRef.current(next, 1);
+            triggerTransitionRef.current(next, -1);
             return;
           }
         }
-        // 左スワイプ → 前
-        if (dx < -50 || vx < -0.5) {
+        // 右スワイプ → 前（方向を逆転）
+        if (dx > 50 || vx > 0.5) {
           const prev = selectedIndexRef.current - 1;
           if (prev >= 0) {
-            triggerTransitionRef.current(prev, -1);
+            triggerTransitionRef.current(prev, 1);
             return;
           }
         }
-        // しきい値未満または端 → 元の位置に戻す
-        Animated.spring(slotX[primarySlotRef.current], { toValue: 0, useNativeDriver: true }).start();
       },
     })
   ).current;
+
+  // フォトビューワー：現在の1枚を削除
+  const handleViewerDelete = () => {
+    const item = galleryAssets[selectedIndexRef.current];
+    if (!item) return;
+    if (savedPhotoIdsRef.current[item.id]) {
+      Alert.alert('削除できません', '保護済みの写真は削除できません。\n先に保護を解除してください。');
+      return;
+    }
+    Alert.alert('写真を削除', 'この写真を削除しますか？', [
+      { text: 'キャンセル', style: 'cancel' },
+      { text: '削除', style: 'destructive', onPress: async () => {
+        playSE(SE_DELETE);
+        try { await MediaLibrary.deleteAssetsAsync([item.id]); } catch {}
+        closeViewer();
+        await reloadGallery();
+      }},
+    ]);
+  };
+
+  // フォトビューワー：現在の1枚を保護/保護解除
+  const handleViewerProtectToggle = () => {
+    const item = galleryAssets[selectedIndexRef.current];
+    if (!item) return;
+    const isProtected = savedPhotoIdsRef.current[item.id];
+    if (isProtected) {
+      Alert.alert('保護を解除', 'この写真の保護を解除しますか？', [
+        { text: 'キャンセル', style: 'cancel' },
+        { text: 'はい', onPress: async () => {
+          playSE(SE_BUTTON01A);
+          const newSaved = { ...savedPhotoIdsRef.current };
+          delete newSaved[item.id];
+          setSavedPhotoIds(newSaved);
+          savedPhotoIdsRef.current = newSaved;
+          await persistSavedPhotoIds(newSaved);
+        }},
+      ]);
+    } else {
+      const currentCount = Object.keys(savedPhotoIdsRef.current).length;
+      if (currentCount >= PROTECT_LIMIT) {
+        Alert.alert('保護できません', `保護できる写真は${PROTECT_LIMIT}枚までです。`);
+        return;
+      }
+      Alert.alert('写真を保護', 'この写真を保護しますか？\n保護された写真は削除できなくなります。', [
+        { text: 'キャンセル', style: 'cancel' },
+        { text: 'はい', onPress: async () => {
+          playSE(SE_BUTTON01A);
+          const newSaved = { ...savedPhotoIdsRef.current, [item.id]: true };
+          setSavedPhotoIds(newSaved);
+          savedPhotoIdsRef.current = newSaved;
+          await persistSavedPhotoIds(newSaved);
+        }},
+      ]);
+    }
+  };
 
   // テーマ変更（タイマー・生き物をリセットして設定を保存）
   const handleThemeChange = (id) => {
@@ -2038,7 +2122,7 @@ export default function App() {
                   />
                 </Animated.View>
               )}
-              {/* ✕ボタンとカウンター：アニメーション中は非表示 */}
+              {/* ✕ボタン・カウンター・削除・保護：アニメーション中は非表示 */}
               {pendingIndex === null && (
                 <>
                   <TouchableOpacity style={styles.viewerClose} onPress={closeViewer}>
@@ -2047,6 +2131,16 @@ export default function App() {
                   <Text style={styles.viewerCounter}>
                     {selectedIndex + 1} / {galleryAssets.length}
                   </Text>
+                  {/* 左下：保護/保護解除 */}
+                  <TouchableOpacity style={styles.viewerProtectBtn} onPress={handleViewerProtectToggle}>
+                    <Text style={styles.viewerActionText}>
+                      {savedPhotoIds[galleryAssets[selectedIndex]?.id] ? '☆' : '⭐'}
+                    </Text>
+                  </TouchableOpacity>
+                  {/* 右下：削除 */}
+                  <TouchableOpacity style={styles.viewerDeleteBtn} onPress={handleViewerDelete}>
+                    <Text style={styles.viewerActionText}>🗑</Text>
+                  </TouchableOpacity>
                 </>
               )}
             </Animated.View>
@@ -2177,6 +2271,19 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   viewerCloseText: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
+  viewerProtectBtn: {
+    position: 'absolute', bottom: 40, left: 24,
+    width: 52, height: 52, borderRadius: 26,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  viewerDeleteBtn: {
+    position: 'absolute', bottom: 40, right: 24,
+    width: 52, height: 52, borderRadius: 26,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  viewerActionText: { fontSize: 26 },
   viewerCounter: {
     position: 'absolute', bottom: 40, alignSelf: 'center',
     color: '#fff', fontSize: 14,
