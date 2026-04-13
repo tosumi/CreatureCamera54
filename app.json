@@ -16,8 +16,10 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "生き物を呼び寄せるためにカメラを使います",
-        "NSPhotoLibraryAddUsageDescription": "生き物と一緒に撮った写真を保存します"
-      }
+        "NSPhotoLibraryAddUsageDescription": "生き物と一緒に撮った写真を保存します",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bundleIdentifier": "com.tosumi.CreatureCamera"
     },
     "android": {
       "adaptiveIcon": {
@@ -28,6 +30,11 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "f049871f-78b9-49fb-97f6-8f0b30839d58"
+      }
     }
   }
 }

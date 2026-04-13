@@ -214,7 +214,7 @@ function pickCreature(theme) {
   const set     = CREATURE_SETS[theme] ?? CREATURE_SETS.default;
   const base    = set[Math.floor(Math.random() * set.length)];
   const variant = SIZE_VARIANTS[Math.floor(Math.random() * SIZE_VARIANTS.length)];
-  return { ...base, size: base.size * variant.scale };
+  return { ...base, size: base.size * variant.scale, scale: variant.scale };
 }
 
 // 上:10%、下・左・右:各30%（4方向）
@@ -269,32 +269,81 @@ const CREATURE_ANIM = {
 function getAnimMode(id) { return CREATURE_ANIM[id] || 'edge'; }
 
 
-// vp: { x, y, w, h } — creature spawn viewport
+// vp: { x, y, w, h, fullScreen } — creature spawn viewport
+// 安全フレーム（生き物の出現アニメーション完了時の収納範囲）を計算
+function getSafeFrame(vp) {
+  const { x: VX, y: VY, w: VW, h: VH, fullScreen: isFS } = vp;
+  const hmPct = isFS ? 0.25 : 0.20; // 上下マージン割合
+  const wPct  = 0.10;                // 左右マージン割合
+  return {
+    left:   VX + VW * wPct,
+    top:    VY + VH * hmPct,
+    right:  VX + VW * (1 - wPct),
+    bottom: VY + VH * (1 - hmPct),
+  };
+}
+
 function getEdgeSetup(edge, size, vp) {
   const { x: VX, y: VY, w: VW, h: VH } = vp;
+  const sf   = getSafeFrame(vp);
+  // ビューポートの中心（各方向で画面半分を超えないようにするため）
+  const midX = VX + VW / 2;
+  const midY = VY + VH / 2;
+  const safeW = Math.max(0, sf.right  - sf.left  - size);
+  const safeH = Math.max(0, sf.bottom - sf.top   - size);
+
   switch (edge) {
-    // 上下は横位置をビューポート中央1/2に限定
-    case 'top':    return { initTop: VY - size,    initLeft: VX + VW / 4 + Math.random() * Math.max(0, VW / 2 - size), enterTo: { top:  VY + size + 20 } };
-    case 'bottom': return {
-      // フレームモード・全画面とも VY+VH（コントロールパネル上端）から開始
-      initTop:  VY + VH,
-      initLeft: VX + VW / 4 + Math.random() * Math.max(0, VW / 2 - size),
-      enterTo:  { top: VY + VH - 2 * size - 20 },
-    };
-    // 左右は上下位置をビューポート中央1/3に限定
-    case 'left':   return { initTop: VY + VH / 3 + Math.random() * Math.max(0, VH / 3 - size), initLeft: VX - size,    enterTo: { left: VX + size + 20 } };
-    case 'right':  return { initTop: VY + VH / 3 + Math.random() * Math.max(0, VH / 3 - size), initLeft: VX + VW,      enterTo: { left: VX + VW - 2 * size - 20 } };
+    case 'top': {
+      // 上から入る → 上半分（midY）を超えない
+      const rH = Math.max(0, Math.min(sf.bottom, midY) - size - sf.top);
+      return {
+        initTop:  VY - size,
+        initLeft: sf.left + Math.random() * safeW,
+        enterTo:  { top: sf.top + Math.random() * rH },
+      };
+    }
+    case 'bottom': {
+      // 下から入る → 下半分（midY）を超えない
+      const rTop = Math.max(sf.top, midY);
+      const rH   = Math.max(0, sf.bottom - size - rTop);
+      return {
+        initTop:  VY + VH,
+        initLeft: sf.left + Math.random() * safeW,
+        enterTo:  { top: rTop + Math.random() * rH },
+      };
+    }
+    case 'left': {
+      // 左から入る → 左半分（midX）を超えない
+      const rW = Math.max(0, Math.min(sf.right, midX) - size - sf.left);
+      return {
+        initTop:  sf.top + Math.random() * safeH,
+        initLeft: VX - size,
+        enterTo:  { left: sf.left + Math.random() * rW },
+      };
+    }
+    case 'right': {
+      // 右から入る → 右半分（midX）を超えない
+      const rLeft = Math.max(sf.left, midX);
+      const rW    = Math.max(0, sf.right - size - rLeft);
+      return {
+        initTop:  sf.top + Math.random() * safeH,
+        initLeft: VX + VW,
+        enterTo:  { left: rLeft + Math.random() * rW },
+      };
+    }
   }
 }
 
-const FULL_VP = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H };
+const FULL_VP = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, fullScreen: true };
 
 function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onCapturable, onUncapturable, vp, isSpecial, itemLabel }) {
   const viewport = vp ?? FULL_VP;
   const isFade   = mode === 'fadein';
   const edgeSetup = isFade ? null : getEdgeSetup(edge, creature.size, viewport);
-  const initTop  = isFade ? viewport.y + 20 + Math.random() * Math.max(10, viewport.h - creature.size - 40) : edgeSetup.initTop;
-  const initLeft = isFade ? viewport.x + 20 + Math.random() * Math.max(10, viewport.w - creature.size - 40) : edgeSetup.initLeft;
+  // fadein も安全フレーム内にランダム配置
+  const sf = getSafeFrame(viewport);
+  const initTop  = isFade ? sf.top  + Math.random() * Math.max(0, sf.bottom - sf.top  - creature.size) : edgeSetup.initTop;
+  const initLeft = isFade ? sf.left + Math.random() * Math.max(0, sf.right  - sf.left - creature.size) : edgeSetup.initLeft;
   const enterTo  = isFade ? null : edgeSetup.enterTo;
 
   const topAnim     = useRef(new Animated.Value(initTop)).current;
@@ -513,6 +562,7 @@ export default function App() {
   const [autoDeleteTarget, setAutoDeleteTarget] = useState('oldest');   // 'oldest' | 'newest'
   const [bgmEnabled, setBgmEnabled]           = useState(true);         // BGM：あり/なし
   const [seEnabled, setSeEnabled]             = useState(true);         // SE：あり/なし
+  const [debugMode, setDebugMode]             = useState(false);        // デバッグ表示
   const harmonyActiveRef   = useRef(false);
   const scopeActiveRef     = useRef(false);
   const autoDeleteRef      = useRef(false);
@@ -724,8 +774,8 @@ export default function App() {
     const delay = 2000 + Math.random() * 6000;
     timerRef.current = setTimeout(() => {
       const vp = fullScreen
-        ? { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H }
-        : { x: 10, y: 20, w: SCREEN_W - 20, h: CAMERA_AREA_H - 20, clampBottom: true };
+        ? { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, fullScreen: true }
+        : { x: 10, y: 20, w: SCREEN_W - 20, h: CAMERA_AREA_H - 20, clampBottom: true, fullScreen: false };
       // 1段階目：特殊アイテム抽選（和気あいあい発動中はスキップ）
       if (!harmonyActiveRef.current && Math.random() < SPECIAL_ITEM_CHANCE) {
         // スコープ残り2回以上の場合はスコープを除外して再抽選
@@ -1759,9 +1809,9 @@ export default function App() {
         fullScreen ? (
           // ── 全画面モードのUI（従来通り）──
           <>
-            <TouchableOpacity style={styles.exitBtn} onPress={onExitPress}>
+            {/* <TouchableOpacity style={styles.exitBtn} onPress={onExitPress}>
               <Text style={styles.exitText}>✕</Text>
-            </TouchableOpacity>
+            </TouchableOpacity> */}
             <View style={styles.shutterArea}>
               <TouchableOpacity style={styles.shutterBtn} onPress={takePicture}>
                 <View style={styles.shutterInner} />
@@ -1777,10 +1827,10 @@ export default function App() {
         ) : (
           // ── フレームモードのUI（下部パネル）──
           <>
-            {/* カメラエリア内の✕ボタン */}
-            <TouchableOpacity style={styles.exitBtn} onPress={onExitPress}>
+            {/* カメラエリア内の✕ボタン（本番用一時非表示） */}
+            {/* <TouchableOpacity style={styles.exitBtn} onPress={onExitPress}>
               <Text style={styles.exitText}>✕</Text>
-            </TouchableOpacity>
+            </TouchableOpacity> */}
             {/* 下部コントロールパネル */}
             <View style={styles.controlPanel}>
               {/* ギャラリー（左） */}
@@ -1800,6 +1850,39 @@ export default function App() {
             </View>
           </>
         )
+      )}
+
+      {/* デバッグオーバーレイ */}
+      {debugMode && !compositing && (
+        (() => {
+          const debugVpW = fullScreen ? SCREEN_W : SCREEN_W - 20;
+          const debugVpH = fullScreen ? SCREEN_H : CAMERA_AREA_H - 20;
+          const finalPos = creatureFinalPosRef.current;
+          const scale = activeCreature?.creature?.scale ?? null;
+          const objSize = scale == null ? '-' : scale >= 1.5 ? 'Large' : scale >= 1.2 ? 'Midd' : 'Small';
+          return (
+            <View pointerEvents="none" style={{
+              position: 'absolute', zIndex: 100,
+              top: SCREEN_H / 2 - 50, left: 0, right: 0,
+              alignItems: 'center',
+            }}>
+              <View style={{
+                backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 8,
+                paddingHorizontal: 16, paddingVertical: 10, gap: 4,
+              }}>
+                <Text style={{ color: '#0f0', fontFamily: 'monospace', fontSize: 13 }}>
+                  Scr-Size: {Math.round(debugVpW)} x {Math.round(debugVpH)}
+                </Text>
+                <Text style={{ color: '#0f0', fontFamily: 'monospace', fontSize: 13 }}>
+                  Anm-POS: {Math.round(finalPos.left)} x {Math.round(finalPos.top)}
+                </Text>
+                <Text style={{ color: '#0f0', fontFamily: 'monospace', fontSize: 13 }}>
+                  Obj-Size: {objSize}
+                </Text>
+              </View>
+            </View>
+          );
+        })()
       )}
 
       {/* 設定オーバーレイ（Modal→絶対配置Viewに変更：fullScreen切替時の再アニメーション防止） */}
@@ -2004,6 +2087,24 @@ export default function App() {
               />
             </View>
           </View>
+
+          {/* 本番用一時非表示：デバッグ設定
+          <View style={styles.settingsDivider} />
+          <View style={styles.settingsSection}>
+            <View style={styles.settingsRow}>
+              <Text style={styles.settingsSectionLabel}>デバッグ：</Text>
+              <Text style={[styles.settingsRowLabel, { flex: 1 }]}>
+                {debugMode ? 'On' : 'Off'}
+              </Text>
+              <Switch
+                value={debugMode}
+                onValueChange={(v) => setDebugMode(v)}
+                trackColor={{ false: '#555', true: '#4CD964' }}
+                thumbColor="#fff"
+              />
+            </View>
+          </View>
+          */}
         </View>
       )}
 
@@ -2134,7 +2235,7 @@ export default function App() {
                   {/* 左下：保護/保護解除 */}
                   <TouchableOpacity style={styles.viewerProtectBtn} onPress={handleViewerProtectToggle}>
                     <Text style={styles.viewerActionText}>
-                      {savedPhotoIds[galleryAssets[selectedIndex]?.id] ? '☆' : '⭐'}
+                      {savedPhotoIds[galleryAssets[selectedIndex]?.id] ? '⭐' : '☆'}
                     </Text>
                   </TouchableOpacity>
                   {/* 右下：削除 */}
