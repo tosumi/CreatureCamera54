@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "CreatureCamera54",
+    "name": "CreatureCamera",
     "slug": "CreatureCamera54",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -16,6 +16,7 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "生き物を呼び寄せるためにカメラを使います",
+        "NSPhotoLibraryUsageDescription": "撮影した生き物の写真をギャラリーで表示します",
         "NSPhotoLibraryAddUsageDescription": "生き物と一緒に撮った写真を保存します",
         "ITSAppUsesNonExemptEncryption": false
       },
