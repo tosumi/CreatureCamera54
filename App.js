@@ -41,6 +41,9 @@ const SE_BUTTON01A     = require('./assets/se_button01a.mp3');
 const BGM_MAIN         = require('./assets/bgm_default.mp3');
 const SE_ITEM_PREVIEW  = require('./assets/se_item_preview.mp3');
 const TUTORIAL_KEY           = '@creature_camera_tutorial_done';
+const SKIP_FORCED_ITEM_KEY   = '@creature_camera_skip_forced_item'; // チュートリアルスキップ後の強制特殊アイテム残りカウント
+const PITY_COUNTER_KEY       = '@creature_camera_pity_counter';     // 連続通常撮影カウンタ（天井補正用）
+const PITY_THRESHOLD         = 10; // この回数を超えると1回ごとに+1%
 const TUTORIAL_CREATURE_SIZE = 120; // チュートリアル強制出現時のサイズ（ラージ）
 
 // テーマ別BGM（未設定テーマは null = BGMなし）
@@ -70,7 +73,7 @@ const PHOTO_LIMIT = 30;
 const OVERFLOW_LIMIT = 80; // 超過モード時の表示上限
 const PROTECT_LIMIT = 20;  // 保護できる写真の上限枚数
 const FRAME_MAX = 20;      // フレーム残り回数の上限
-const SPECIAL_ITEM_CHANCE = 0.05; // 特殊アイテム出現確率（5%）
+const SPECIAL_ITEM_CHANCE = 0.10; // 特殊アイテム出現確率（10%）
 const SPECIAL_ITEMS = [
   { type: 'theme',   weight: 10, emoji: '🎁', label: '新テーマ' },
   { type: 'frame',   weight: 40, emoji: '🌟', label: 'フレーム+5' },
@@ -567,7 +570,6 @@ export default function App() {
   const [autoDeleteTarget, setAutoDeleteTarget] = useState('oldest');   // 'oldest' | 'newest'
   const [bgmEnabled, setBgmEnabled]           = useState(true);         // BGM：あり/なし
   const [seEnabled, setSeEnabled]             = useState(true);         // SE：あり/なし
-  const [debugMode, setDebugMode]             = useState(false);        // デバッグ表示
   const harmonyActiveRef   = useRef(false);
   const scopeActiveRef     = useRef(false);
   const autoDeleteRef      = useRef(false);
@@ -583,6 +585,9 @@ export default function App() {
   const tutorialAutoShootRef = useRef(null); // step12の10秒自動撮影タイマー
   const takePictureRef       = useRef(null); // stale closure対策
   const playSERef            = useRef(null); // stale closure対策
+  const skipForcedItemRef      = useRef(0);     // チュートリアルスキップ後の強制特殊アイテム残りカウント（4→0）
+  const forceNextSpecialItemRef = useRef(false); // 次の scheduleNextCreature で強制的に特殊アイテムを出現させるフラグ
+  const pityCounterRef         = useRef(0);     // 連続通常撮影カウンタ（PITY_THRESHOLD超過で出現率+1%/回）
 
   const timerRef             = useRef(null);
   const isTakingPictureRef   = useRef(false); // 撮影〜保存完了までの多重入力防止
@@ -681,6 +686,24 @@ export default function App() {
       }
     } catch {}
 
+    // チュートリアルスキップ後の強制特殊アイテム残りカウントを読み込む
+    try {
+      const skipForcedJson = await AsyncStorage.getItem(SKIP_FORCED_ITEM_KEY);
+      if (skipForcedJson) {
+        const count = parseInt(skipForcedJson, 10);
+        if (!isNaN(count) && count > 0) skipForcedItemRef.current = count;
+      }
+    } catch {}
+
+    // 天井補正カウンタを読み込む
+    try {
+      const pityJson = await AsyncStorage.getItem(PITY_COUNTER_KEY);
+      if (pityJson) {
+        const count = parseInt(pityJson, 10);
+        if (!isNaN(count) && count > 0) pityCounterRef.current = count;
+      }
+    } catch {}
+
     if (saved !== null) {
       // 設定あり → そのまま反映
       const savedTheme = saved.theme || 'default';
@@ -711,18 +734,18 @@ export default function App() {
     }
 
     // 設定なし → デフォルトテーマのみ所持・フレーム5回で初期化
-    const DEBUG_UNLOCKED = ['default'];
-    const DEBUG_FRAME_COUNTS = Object.fromEntries(ALL_THEME_IDS.map(id => [id, id === 'default' ? 5 : 0]));
-    setUnlockedThemes(DEBUG_UNLOCKED);
-    setFrameCounts(DEBUG_FRAME_COUNTS);
-    frameCountsRef.current = DEBUG_FRAME_COUNTS;
+    const initialUnlocked = ['default'];
+    const initialFrameCounts = Object.fromEntries(ALL_THEME_IDS.map(id => [id, id === 'default' ? 5 : 0]));
+    setUnlockedThemes(initialUnlocked);
+    setFrameCounts(initialFrameCounts);
+    frameCountsRef.current = initialFrameCounts;
 
     // 設定なし → アルバムの有無で判定
     const existingAlbum = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
     if (existingAlbum) {
       // アルバムあり → アルバムモードで開始（設定として保存）
       setSaveMode('album');
-      persistSettings('default', true, true, false, DEBUG_UNLOCKED, DEBUG_FRAME_COUNTS);
+      persistSettings('default', true, true, false, initialUnlocked, initialFrameCounts);
       const isOverflow = await checkAlbumLimitAtStartup('album');
       if (isOverflow) setOverflowMode(true);
       // チュートリアル未完了チェック
@@ -740,11 +763,11 @@ export default function App() {
       [
         { text: 'いいえ', style: 'cancel', onPress: () => {
           setSaveMode('default');
-          persistSettings('default', false, true, false, DEBUG_UNLOCKED, DEBUG_FRAME_COUNTS);
+          persistSettings('default', false, true, false, initialUnlocked, initialFrameCounts);
         }},
         { text: 'はい', onPress: () => {
           setSaveMode('album');
-          persistSettings('default', true, true, false, DEBUG_UNLOCKED, DEBUG_FRAME_COUNTS);
+          persistSettings('default', true, true, false, initialUnlocked, initialFrameCounts);
         }},
       ]
     );
@@ -805,12 +828,28 @@ export default function App() {
       const vp = fullScreen
         ? { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, fullScreen: true }
         : { x: 10, y: 20, w: SCREEN_W - 20, h: CAMERA_AREA_H - 20, clampBottom: true, fullScreen: false };
-      // 1段階目：特殊アイテム抽選（和気あいあい発動中はスキップ）
-      if (!harmonyActiveRef.current && Math.random() < SPECIAL_ITEM_CHANCE) {
-        playSERef.current?.(SE_ITEM_PREVIEW); // アイテム出現予告SE
-        // スコープ残り2回以上の場合はスコープを除外して再抽選
+      // チュートリアルスキップ後の強制特殊アイテム（5枚目撮影保証）
+      if (forceNextSpecialItemRef.current) {
+        forceNextSpecialItemRef.current = false;
+        playSERef.current?.(SE_ITEM_PREVIEW);
+        // 予兆SE再生後1秒待ってから出現アニメーション開始
         const item = pickSpecialItem(scopeCountRef.current >= 2 ? ['scope'] : []);
-        setActiveCreature({ creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, key: Date.now(), vp, isSpecial: true, itemType: item.type, itemLabel: item.label });
+        timerRef.current = setTimeout(() => {
+          setActiveCreature({ creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, key: Date.now(), vp, isSpecial: true, itemType: item.type, itemLabel: item.label });
+        }, 1000);
+        return;
+      }
+      // 1段階目：特殊アイテム抽選（和気あいあい発動中はスキップ）
+      // 天井補正：PITY_THRESHOLD 超過後は1回ごとに+1%
+      const effectiveChance = SPECIAL_ITEM_CHANCE +
+        Math.max(0, (pityCounterRef.current - PITY_THRESHOLD) * 0.01);
+      if (!harmonyActiveRef.current && Math.random() < effectiveChance) {
+        playSERef.current?.(SE_ITEM_PREVIEW); // アイテム出現予告SE
+        // 予兆SE再生後1秒待ってから出現アニメーション開始
+        const item = pickSpecialItem(scopeCountRef.current >= 2 ? ['scope'] : []);
+        timerRef.current = setTimeout(() => {
+          setActiveCreature({ creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, key: Date.now(), vp, isSpecial: true, itemType: item.type, itemLabel: item.label });
+        }, 1000);
         return;
       }
       // 2段階目：通常生き物抽選（直前と同じ生き物は1回リトライ）
@@ -873,6 +912,11 @@ export default function App() {
     setActiveCreature(null);
     setGalleryVisible(false);
     setSettingsVisible(false);
+    // アイテム入手前（step12未到達）にスキップ → 5枚目の撮影を強制特殊アイテムにする
+    if (tutorialStepRef.current < 12) {
+      skipForcedItemRef.current = 4; // 4枚撮影後に強制特殊アイテム出現 → 5枚目で撮影
+      AsyncStorage.setItem(SKIP_FORCED_ITEM_KEY, '4').catch(() => {});
+    }
     completeTutorial();
   }, [completeTutorial]);
 
@@ -885,8 +929,9 @@ export default function App() {
 
     if (step === 2) {
       // 次へ → 宇宙人をラージサイズで強制出現（fadein・一時停止）→ step 3
+      // メッセージバブル（下半分）と重ならないよう上半分に固定
       clearTimeout(timerRef.current);
-      const vp = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, fullScreen: true };
+      const vp = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H * 0.5, fullScreen: true };
       setActiveCreature({
         creature: { id: 'alien', emoji: '👽', size: TUTORIAL_CREATURE_SIZE },
         mode: 'fadein', edge: null, key: Date.now(), vp,
@@ -915,8 +960,9 @@ export default function App() {
       setTimeout(() => { setStep(11); }, 1000);
     } else if (step === 11) {
       // 次へ → テーマアイテムをラージサイズで強制出現（SE はstep10移行時に再生済み）→ step 12
+      // メッセージバブル（下半分）と重ならないよう上半分に固定
       clearTimeout(timerRef.current);
-      const vp = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, fullScreen: true };
+      const vp = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H * 0.5, fullScreen: true };
       setActiveCreature({
         creature: { id: 'theme', emoji: '🎁', size: TUTORIAL_CREATURE_SIZE },
         mode: 'fadein', edge: null, key: Date.now(), vp,
@@ -977,6 +1023,9 @@ export default function App() {
       capturableRef.current = false;
       setCreatureCapturable(false);
       setActiveCreature(null);
+      // 天井補正カウンタをリセット
+      pityCounterRef.current = 0;
+      AsyncStorage.setItem(PITY_COUNTER_KEY, '0').catch(() => {});
       if (tutorialStepRef.current === 0) scheduleNextCreature(); // チュートリアル中はスケジュールしない
       const itype = activeCreature.itemType;
       if (itype === 'theme') {
@@ -1126,6 +1175,15 @@ export default function App() {
               setTutorialStep(4);
               return;
             }
+            // チュートリアルスキップ後の強制特殊アイテムカウンタ更新
+            if (skipForcedItemRef.current > 0) {
+              skipForcedItemRef.current -= 1;
+              AsyncStorage.setItem(SKIP_FORCED_ITEM_KEY, String(skipForcedItemRef.current)).catch(() => {});
+              if (skipForcedItemRef.current === 0) forceNextSpecialItemRef.current = true;
+            }
+            // 天井補正カウンタ更新（通常撮影のたびにインクリメント）
+            pityCounterRef.current += 1;
+            AsyncStorage.setItem(PITY_COUNTER_KEY, String(pityCounterRef.current)).catch(() => {});
             scheduleNextCreatureRef.current?.();
 
             // 上限チェック＆自動削除（アルバムモードのみ・「写真が撮れた」OK後に実行）
@@ -2031,39 +2089,6 @@ export default function App() {
         )
       )}
 
-      {/* デバッグオーバーレイ */}
-      {debugMode && !compositing && (
-        (() => {
-          const debugVpW = fullScreen ? SCREEN_W : SCREEN_W - 20;
-          const debugVpH = fullScreen ? SCREEN_H : CAMERA_AREA_H - 20;
-          const finalPos = creatureFinalPosRef.current;
-          const scale = activeCreature?.creature?.scale ?? null;
-          const objSize = scale == null ? '-' : scale >= 1.5 ? 'Large' : scale >= 1.2 ? 'Midd' : 'Small';
-          return (
-            <View pointerEvents="none" style={{
-              position: 'absolute', zIndex: 100,
-              top: SCREEN_H / 2 - 50, left: 0, right: 0,
-              alignItems: 'center',
-            }}>
-              <View style={{
-                backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 8,
-                paddingHorizontal: 16, paddingVertical: 10, gap: 4,
-              }}>
-                <Text style={{ color: '#0f0', fontFamily: 'monospace', fontSize: 13 }}>
-                  Scr-Size: {Math.round(debugVpW)} x {Math.round(debugVpH)}
-                </Text>
-                <Text style={{ color: '#0f0', fontFamily: 'monospace', fontSize: 13 }}>
-                  Anm-POS: {Math.round(finalPos.left)} x {Math.round(finalPos.top)}
-                </Text>
-                <Text style={{ color: '#0f0', fontFamily: 'monospace', fontSize: 13 }}>
-                  Obj-Size: {objSize}
-                </Text>
-              </View>
-            </View>
-          );
-        })()
-      )}
-
       {/* 設定オーバーレイ（Modal→絶対配置Viewに変更：fullScreen切替時の再アニメーション防止） */}
       {settingsVisible && (
         <View style={[styles.settingsContainer, styles.settingsOverlay]}>
@@ -2278,54 +2303,7 @@ export default function App() {
             </View>
           </View>
 
-          {/* 本番用一時非表示：デバッグ設定
-          <View style={styles.settingsDivider} />
-          <View style={styles.settingsSection}>
-            <View style={styles.settingsRow}>
-              <Text style={styles.settingsSectionLabel}>デバッグ：</Text>
-              <Text style={[styles.settingsRowLabel, { flex: 1 }]}>
-                {debugMode ? 'On' : 'Off'}
-              </Text>
-              <Switch
-                value={debugMode}
-                onValueChange={(v) => setDebugMode(v)}
-                trackColor={{ false: '#555', true: '#4CD964' }}
-                thumbColor="#fff"
-              />
-            </View>
-          </View>
-          */}
           </View>{/* チュートリアル step15 無効化ラッパーここまで */}
-
-          {/* ▼▼▼ 開発用：データリセットボタン（テスト後に削除） ▼▼▼ */}
-          <View style={styles.settingsDivider} />
-          <View style={styles.settingsSection}>
-            <TouchableOpacity
-              onPress={() => {
-                Alert.alert(
-                  '🗑 データリセット',
-                  '全設定・チュートリアル履歴を削除します。\nアプリを再起動してください。',
-                  [
-                    { text: 'キャンセル', style: 'cancel' },
-                    { text: 'リセット', style: 'destructive', onPress: async () => {
-                      await AsyncStorage.multiRemove([
-                        SETTINGS_KEY,
-                        TUTORIAL_KEY,
-                        SAVED_PHOTOS_KEY,
-                        AUTO_DELETE_KEY,
-                        AUDIO_SETTINGS_KEY,
-                      ]);
-                      Alert.alert('完了', 'データを削除しました。\nアプリを再起動してください。');
-                    }},
-                  ]
-                );
-              }}
-              style={{ backgroundColor: '#c0392b', borderRadius: 8, padding: 12, alignItems: 'center' }}
-            >
-              <Text style={{ color: '#fff', fontWeight: 'bold' }}>【開発用】全データリセット</Text>
-            </TouchableOpacity>
-          </View>
-          {/* ▲▲▲ 開発用：データリセットボタン（テスト後に削除） ▲▲▲ */}
         </View>
       )}
 
@@ -2449,7 +2427,7 @@ export default function App() {
               )}
               {/* ✕ボタン・カウンター・削除・保護：アニメーション中は非表示 */}
               {pendingIndex === null && (
-                <View pointerEvents={[6,7,8].includes(tutorialStep) ? 'none' : 'auto'}>
+                <View style={StyleSheet.absoluteFill} pointerEvents={[6,7,8].includes(tutorialStep) ? 'none' : 'auto'}>
                   <TouchableOpacity style={styles.viewerClose} onPress={closeViewer}>
                     <Text style={styles.viewerCloseText}>✕</Text>
                   </TouchableOpacity>
@@ -2648,9 +2626,12 @@ export default function App() {
                     <Text style={styles.tutorialBtnText}>次へ</Text>
                   </TouchableOpacity>
                 )}
-                <TouchableOpacity style={styles.tutorialBtnSkip} onPress={skipTutorial}>
-                  <Text style={styles.tutorialBtnSkipText}>スキップ</Text>
-                </TouchableOpacity>
+                {/* step3（宇宙人撮影待ち）・step12（アイテム撮影待ち）はスキップボタン非表示 */}
+                {tutorialStep !== 3 && tutorialStep !== 12 && (
+                  <TouchableOpacity style={styles.tutorialBtnSkip} onPress={skipTutorial}>
+                    <Text style={styles.tutorialBtnSkipText}>スキップ</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             )}
           </View>
