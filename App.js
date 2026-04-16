@@ -39,6 +39,9 @@ const SE_OPEN_CABINET  = require('./assets/se_open_cabinet.mp3');
 const SE_CLOSE_CABINET = require('./assets/se_close_cabinet.mp3');
 const SE_BUTTON01A     = require('./assets/se_button01a.mp3');
 const BGM_MAIN         = require('./assets/bgm_default.mp3');
+const SE_ITEM_PREVIEW  = require('./assets/se_item_preview.mp3');
+const TUTORIAL_KEY           = '@creature_camera_tutorial_done';
+const TUTORIAL_CREATURE_SIZE = 120; // チュートリアル強制出現時のサイズ（ラージ）
 
 // テーマ別BGM（未設定テーマは null = BGMなし）
 const THEME_BGM = {
@@ -336,7 +339,7 @@ function getEdgeSetup(edge, size, vp) {
 
 const FULL_VP = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, fullScreen: true };
 
-function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onCapturable, onUncapturable, vp, isSpecial, itemLabel }) {
+function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onCapturable, onUncapturable, vp, isSpecial, itemLabel, pauseAfterCapturable }) {
   const viewport = vp ?? FULL_VP;
   const isFade   = mode === 'fadein';
   const edgeSetup = isFade ? null : getEdgeSetup(edge, creature.size, viewport);
@@ -375,6 +378,7 @@ function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onC
         .start(({ finished }) => {
           if (!finished || !alive) return;
           onCapturable?.();
+          if (pauseAfterCapturable) return; // チュートリアル：capturable状態のまま停止
           middle.start(({ finished }) => {
             if (!finished || !alive) return;
             onUncapturable?.();
@@ -389,6 +393,7 @@ function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onC
       Animated.parallel(enterAnims).start(({ finished }) => {
         if (!finished || !alive) return;
         onCapturable?.();
+        if (pauseAfterCapturable) return; // チュートリアル：capturable状態のまま停止
         middle.start(({ finished }) => {
           if (!finished || !alive) return;
           onUncapturable?.();
@@ -572,6 +577,12 @@ export default function App() {
   const bgmSoundRef           = useRef(null);
   const bgmIntentionalStopRef = useRef(false); // 意図的な停止フラグ（自動再開と区別）
   const scopeCountRef      = useRef(0);  // スコープ残り使用回数
+  const [tutorialStep, setTutorialStep] = useState(0); // 0=非表示, 1〜18=各ステップ
+  const [tutorialCapturing, setTutorialCapturing] = useState(false); // シャッター押下〜保存完了中にバブルを隠す
+  const tutorialStepRef      = useRef(0);
+  const tutorialAutoShootRef = useRef(null); // step12の10秒自動撮影タイマー
+  const takePictureRef       = useRef(null); // stale closure対策
+  const playSERef            = useRef(null); // stale closure対策
 
   const timerRef             = useRef(null);
   const isTakingPictureRef   = useRef(false); // 撮影〜保存完了までの多重入力防止
@@ -691,6 +702,11 @@ export default function App() {
         const isOverflow = await checkAlbumLimitAtStartup(albumMode);
         if (isOverflow) setOverflowMode(true);
       }
+      // チュートリアル未完了チェック
+      try {
+        const tutorialDone = await AsyncStorage.getItem(TUTORIAL_KEY);
+        if (!tutorialDone) { tutorialStepRef.current = 1; setTutorialStep(1); }
+      } catch {}
       return;
     }
 
@@ -709,6 +725,11 @@ export default function App() {
       persistSettings('default', true, true, false, DEBUG_UNLOCKED, DEBUG_FRAME_COUNTS);
       const isOverflow = await checkAlbumLimitAtStartup('album');
       if (isOverflow) setOverflowMode(true);
+      // チュートリアル未完了チェック
+      try {
+        const tutorialDone = await AsyncStorage.getItem(TUTORIAL_KEY);
+        if (!tutorialDone) { tutorialStepRef.current = 1; setTutorialStep(1); }
+      } catch {}
       return;
     }
 
@@ -727,6 +748,12 @@ export default function App() {
         }},
       ]
     );
+
+    // チュートリアル未完了チェック（設定なし初回ユーザー）
+    try {
+      const tutorialDone = await AsyncStorage.getItem(TUTORIAL_KEY);
+      if (!tutorialDone) { tutorialStepRef.current = 1; setTutorialStep(1); }
+    } catch {}
   }
 
   // 起動時アルバム上限チェック。上限超過なら true を返す。
@@ -771,13 +798,16 @@ export default function App() {
   }
 
   const scheduleNextCreature = useCallback(() => {
+    if (tutorialStepRef.current > 0) return; // チュートリアル中は自動出現しない
     const delay = 2000 + Math.random() * 6000;
     timerRef.current = setTimeout(() => {
+      if (tutorialStepRef.current > 0) return; // タイマー発火時にも再確認
       const vp = fullScreen
         ? { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, fullScreen: true }
         : { x: 10, y: 20, w: SCREEN_W - 20, h: CAMERA_AREA_H - 20, clampBottom: true, fullScreen: false };
       // 1段階目：特殊アイテム抽選（和気あいあい発動中はスキップ）
       if (!harmonyActiveRef.current && Math.random() < SPECIAL_ITEM_CHANCE) {
+        playSERef.current?.(SE_ITEM_PREVIEW); // アイテム出現予告SE
         // スコープ残り2回以上の場合はスコープを除外して再抽選
         const item = pickSpecialItem(scopeCountRef.current >= 2 ? ['scope'] : []);
         setActiveCreature({ creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, key: Date.now(), vp, isSpecial: true, itemType: item.type, itemLabel: item.label });
@@ -820,8 +850,101 @@ export default function App() {
     capturableRef.current = false;
     setCreatureCapturable(false);
     setActiveCreature(null);
+    if (tutorialStepRef.current === 0) scheduleNextCreature(); // チュートリアル中は自動スケジュールしない
+  }, [scheduleNextCreature]);
+
+  // チュートリアル完了
+  const completeTutorial = useCallback(async () => {
+    if (tutorialAutoShootRef.current) { clearTimeout(tutorialAutoShootRef.current); tutorialAutoShootRef.current = null; }
+    capturableRef.current = false;
+    setCreatureCapturable(false);
+    setActiveCreature(null);
+    tutorialStepRef.current = 0;
+    setTutorialStep(0);
+    try { await AsyncStorage.setItem(TUTORIAL_KEY, 'done'); } catch {}
     scheduleNextCreature();
   }, [scheduleNextCreature]);
+
+  // チュートリアルスキップ
+  const skipTutorial = useCallback(() => {
+    if (tutorialAutoShootRef.current) { clearTimeout(tutorialAutoShootRef.current); tutorialAutoShootRef.current = null; }
+    capturableRef.current = false;
+    setCreatureCapturable(false);
+    setActiveCreature(null);
+    setGalleryVisible(false);
+    setSettingsVisible(false);
+    completeTutorial();
+  }, [completeTutorial]);
+
+  // チュートリアル次のステップへ進む
+  const advanceTutorial = useCallback(() => {
+    const step = tutorialStepRef.current;
+    if (tutorialAutoShootRef.current) { clearTimeout(tutorialAutoShootRef.current); tutorialAutoShootRef.current = null; }
+
+    const setStep = (n) => { tutorialStepRef.current = n; setTutorialStep(n); };
+
+    if (step === 2) {
+      // 次へ → 宇宙人をラージサイズで強制出現（fadein・一時停止）→ step 3
+      clearTimeout(timerRef.current);
+      const vp = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, fullScreen: true };
+      setActiveCreature({
+        creature: { id: 'alien', emoji: '👽', size: TUTORIAL_CREATURE_SIZE },
+        mode: 'fadein', edge: null, key: Date.now(), vp,
+        isSpecial: false, pauseAfterCapturable: true,
+      });
+      setStep(3);
+      // 10秒後に自動撮影（シャッターを押し忘れた場合のフォールバック）
+      tutorialAutoShootRef.current = setTimeout(() => {
+        if (tutorialStepRef.current === 3) takePictureRef.current?.();
+      }, 10000);
+    } else if (step === 4) {
+      // 次へ → ギャラリーを自動オープン → step 5
+      setStep(5);
+      openGallery();
+    } else if (step === 8) {
+      // 次へ → ビューワーを閉じて一覧へ → step 9
+      setStep(9);
+      closeViewer();
+    } else if (step === 10) {
+      // 次へ → ギャラリーを強制クローズ → SE再生 → 1秒後にstep 11表示
+      setGalleryVisible(false);
+      setSelectedIndex(null); setPendingIndex(null);
+      setViewerVisible(false); setSelectionMode(false); setSelectedPhotoIds({});
+      playSERef.current?.(SE_ITEM_PREVIEW); // チャイムを即再生
+      // tutorialStepRef は 10 のまま1秒待機（5〜10はギャラリー内表示なので主画面には出ない）
+      setTimeout(() => { setStep(11); }, 1000);
+    } else if (step === 11) {
+      // 次へ → テーマアイテムをラージサイズで強制出現（SE はstep10移行時に再生済み）→ step 12
+      clearTimeout(timerRef.current);
+      const vp = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, fullScreen: true };
+      setActiveCreature({
+        creature: { id: 'theme', emoji: '🎁', size: TUTORIAL_CREATURE_SIZE },
+        mode: 'fadein', edge: null, key: Date.now(), vp,
+        isSpecial: true, itemType: 'theme', itemLabel: '新テーマ',
+        pauseAfterCapturable: true,
+      });
+      setStep(12);
+      // 10秒後に自動撮影（30秒から短縮）
+      tutorialAutoShootRef.current = setTimeout(() => {
+        if (tutorialStepRef.current === 12) takePictureRef.current?.();
+      }, 10000);
+    } else if (step === 14) {
+      // 次へ → 設定を自動オープン → step 15
+      setStep(15);
+      setSettingsVisible(true);
+    } else if (step === 15) {
+      // 次へ → step 17へ（step 16は存在しない）
+      setStep(17);
+    } else if (step === 17) {
+      // 次へ → 設定を自動クローズ → step 18
+      setStep(18);
+      setSettingsVisible(false);
+    } else if (step === 18) {
+      completeTutorial();
+    } else {
+      setStep(step + 1); // step 6, 7, 9 → そのままインクリメント
+    }
+  }, [completeTutorial, openGallery, closeViewer]);
 
   const takePicture = async () => {
     if (isTakingPictureRef.current || !cameraRef.current || compositing || saveMode === null) return;
@@ -834,6 +957,11 @@ export default function App() {
       playSE(SE_NO_CREATURE);
       Alert.alert('生き物がいません！', '生き物が現れたら撮影してね 👀');
       return;
+    }
+
+    // チュートリアル step3/12 中はシャッター押下時点でバブルを即時非表示（誤スキップ防止）
+    if (tutorialStepRef.current === 3 || tutorialStepRef.current === 12) {
+      setTutorialCapturing(true);
     }
 
     // 特殊アイテム撮影：写真保存なし・生き物を消去して直接効果を適用
@@ -849,7 +977,7 @@ export default function App() {
       capturableRef.current = false;
       setCreatureCapturable(false);
       setActiveCreature(null);
-      scheduleNextCreature();
+      if (tutorialStepRef.current === 0) scheduleNextCreature(); // チュートリアル中はスケジュールしない
       const itype = activeCreature.itemType;
       if (itype === 'theme') {
         const locked = ALL_THEME_IDS.filter(id => !unlockedThemes.includes(id));
@@ -864,9 +992,24 @@ export default function App() {
           persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, newUnlocked, newCounts);
           const label = THEMES.find(t => t.id === newId)?.label ?? newId;
           playSE(SE_ITEM_THEME);
-          Alert.alert('🎁 新しいテーマ！', `「${label}」を取得しました！`);
+          // チュートリアル step12 の場合は OK 後に step14 へ進む
+          if (tutorialStepRef.current === 12) {
+            if (tutorialAutoShootRef.current) { clearTimeout(tutorialAutoShootRef.current); tutorialAutoShootRef.current = null; }
+            Alert.alert('🎁 新しいテーマ！', `「${label}」を取得しました！`, [{
+              text: 'OK', onPress: () => { setTutorialCapturing(false); tutorialStepRef.current = 14; setTutorialStep(14); }
+            }]);
+          } else {
+            Alert.alert('🎁 新しいテーマ！', `「${label}」を取得しました！`);
+          }
         } else {
-          Alert.alert('🎁 テーマ', 'すでにすべてのテーマを取得済みです！');
+          if (tutorialStepRef.current === 12) {
+            if (tutorialAutoShootRef.current) { clearTimeout(tutorialAutoShootRef.current); tutorialAutoShootRef.current = null; }
+            Alert.alert('🎁 テーマ', 'すでにすべてのテーマを取得済みです！', [{
+              text: 'OK', onPress: () => { setTutorialCapturing(false); tutorialStepRef.current = 14; setTutorialStep(14); }
+            }]);
+          } else {
+            Alert.alert('🎁 テーマ', 'すでにすべてのテーマを取得済みです！');
+          }
         }
       } else if (itype === 'frame') {
         const newCount = Math.min(FRAME_MAX, (frameCountsRef.current[theme] ?? 0) + 5);
@@ -976,6 +1119,13 @@ export default function App() {
             capturableRef.current = false;
             setCreatureCapturable(false);
             setActiveCreature(null);
+            if (tutorialStepRef.current === 3) {
+              // チュートリアル step3：撮影完了 → step4 へ進む
+              setTutorialCapturing(false);
+              tutorialStepRef.current = 4;
+              setTutorialStep(4);
+              return;
+            }
             scheduleNextCreatureRef.current?.();
 
             // 上限チェック＆自動削除（アルバムモードのみ・「写真が撮れた」OK後に実行）
@@ -1240,6 +1390,8 @@ export default function App() {
   bgmEnabledRef.current           = bgmEnabled;
   seEnabledRef.current            = seEnabled;
   scheduleNextCreatureRef.current = scheduleNextCreature;
+  takePictureRef.current = takePicture;
+  playSERef.current      = playSE;
 
   // ギャラリーから写真を開く（スロットを初期化）
   const openViewer = (index) => {
@@ -1265,6 +1417,8 @@ export default function App() {
       });
     } else {
       openViewer(index);
+      // チュートリアル step5：写真タップ → step6 へ進む
+      if (tutorialStepRef.current === 5) { tutorialStepRef.current = 6; setTutorialStep(6); }
     }
   };
 
@@ -1658,7 +1812,7 @@ export default function App() {
       <View style={styles.center}>
         <Text style={styles.permText}>カメラの許可が必要です</Text>
         <TouchableOpacity style={styles.btn} onPress={requestCameraPermission}>
-          <Text style={styles.btnText}>許可する</Text>
+          <Text style={styles.btnText}>次へ</Text>
         </TouchableOpacity>
       </View>
     );
@@ -1717,6 +1871,7 @@ export default function App() {
           onFinalPos={(pos) => { creatureFinalPosRef.current = pos; }}
           isSpecial={activeCreature.isSpecial}
           itemLabel={activeCreature.itemLabel}
+          pauseAfterCapturable={activeCreature.pauseAfterCapturable}
           onCapturable={() => { capturableRef.current = true; setCreatureCapturable(true); }}
           onUncapturable={() => { capturableRef.current = false; setCreatureCapturable(false); }}
         />
@@ -1813,14 +1968,26 @@ export default function App() {
               <Text style={styles.exitText}>✕</Text>
             </TouchableOpacity> */}
             <View style={styles.shutterArea}>
-              <TouchableOpacity style={styles.shutterBtn} onPress={takePicture}>
+              <TouchableOpacity
+                style={[styles.shutterBtn, tutorialStep > 0 && tutorialStep !== 3 && tutorialStep !== 12 && { opacity: 0.3 }]}
+                onPress={takePicture}
+                disabled={tutorialStep > 0 && tutorialStep !== 3 && tutorialStep !== 12}
+              >
                 <View style={styles.shutterInner} />
               </TouchableOpacity>
             </View>
-            <TouchableOpacity style={styles.galleryBtn} onPress={openGallery}>
+            <TouchableOpacity
+              style={[styles.galleryBtn, tutorialStep > 0 && tutorialStep !== 4 && { opacity: 0.3 }, tutorialStep === 4 && { borderColor: '#4CD964', borderWidth: 3 }]}
+              onPress={tutorialStep === 4 ? advanceTutorial : openGallery}
+              disabled={tutorialStep > 0 && tutorialStep !== 4}
+            >
               <Text style={styles.galleryIcon}>🖼️</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.settingsBtn} onPress={() => setSettingsVisible(true)}>
+            <TouchableOpacity
+              style={[styles.settingsBtn, tutorialStep > 0 && tutorialStep !== 14 && { opacity: 0.3 }, tutorialStep === 14 && { borderColor: '#4CD964', borderWidth: 3 }]}
+              onPress={tutorialStep === 14 ? advanceTutorial : () => setSettingsVisible(true)}
+              disabled={tutorialStep > 0 && tutorialStep !== 14}
+            >
               <Text style={styles.settingsIcon}>⚙️</Text>
             </TouchableOpacity>
           </>
@@ -1834,16 +2001,28 @@ export default function App() {
             {/* 下部コントロールパネル */}
             <View style={styles.controlPanel}>
               {/* ギャラリー（左） */}
-              <TouchableOpacity style={styles.panelIconBtn} onPress={openGallery}>
+              <TouchableOpacity
+                style={[styles.panelIconBtn, tutorialStep > 0 && tutorialStep !== 4 && { opacity: 0.3 }, tutorialStep === 4 && { borderRadius: 8, borderWidth: 2, borderColor: '#4CD964' }]}
+                onPress={tutorialStep === 4 ? advanceTutorial : openGallery}
+                disabled={tutorialStep > 0 && tutorialStep !== 4}
+              >
                 <Text style={styles.panelIconText}>🖼️</Text>
                 <Text style={styles.panelLabel}>ギャラリー</Text>
               </TouchableOpacity>
               {/* シャッター（中央） */}
-              <TouchableOpacity style={styles.panelShutterBtn} onPress={takePicture}>
+              <TouchableOpacity
+                style={[styles.panelShutterBtn, tutorialStep > 0 && tutorialStep !== 3 && tutorialStep !== 12 && { opacity: 0.3 }]}
+                onPress={takePicture}
+                disabled={tutorialStep > 0 && tutorialStep !== 3 && tutorialStep !== 12}
+              >
                 <View style={styles.panelShutterInner} />
               </TouchableOpacity>
               {/* 設定（右） */}
-              <TouchableOpacity style={styles.panelIconBtn} onPress={() => setSettingsVisible(true)}>
+              <TouchableOpacity
+                style={[styles.panelIconBtn, tutorialStep > 0 && tutorialStep !== 14 && { opacity: 0.3 }, tutorialStep === 14 && { borderRadius: 8, borderWidth: 2, borderColor: '#4CD964' }]}
+                onPress={tutorialStep === 14 ? advanceTutorial : () => setSettingsVisible(true)}
+                disabled={tutorialStep > 0 && tutorialStep !== 14}
+              >
                 <Text style={styles.panelIconText}>⚙️</Text>
                 <Text style={styles.panelLabel}>設定</Text>
               </TouchableOpacity>
@@ -1888,11 +2067,18 @@ export default function App() {
       {/* 設定オーバーレイ（Modal→絶対配置Viewに変更：fullScreen切替時の再アニメーション防止） */}
       {settingsVisible && (
         <View style={[styles.settingsContainer, styles.settingsOverlay]}>
-          {/* ヘッダー */}
+          {/* ヘッダー（チュートリアル step15 中はCloseも無効） */}
           <View style={styles.settingsHeader}>
             <Text style={styles.settingsTitle}>設定</Text>
-            <TouchableOpacity onPress={() => setSettingsVisible(false)}>
-              <Text style={styles.settingsClose}>✕</Text>
+            <TouchableOpacity
+              onPress={tutorialStep === 17 ? advanceTutorial : () => setSettingsVisible(false)}
+              disabled={tutorialStep === 15}
+            >
+              <Text style={[
+                styles.settingsClose,
+                tutorialStep === 15 && { opacity: 0.3 },
+                tutorialStep === 17 && { color: '#4CD964' },
+              ]}>✕</Text>
             </TouchableOpacity>
           </View>
 
@@ -1934,6 +2120,10 @@ export default function App() {
           </View>
 
           <View style={styles.settingsDivider} />
+
+          {/* チュートリアル step15/17 中はテーマ以外を無効化 */}
+          <View pointerEvents={[15, 17].includes(tutorialStep) ? 'none' : 'auto'}
+                style={[15, 17].includes(tutorialStep) ? { opacity: 0.3 } : null}>
 
           {/* フレーム */}
           <View style={styles.settingsSection}>
@@ -2105,6 +2295,37 @@ export default function App() {
             </View>
           </View>
           */}
+          </View>{/* チュートリアル step15 無効化ラッパーここまで */}
+
+          {/* ▼▼▼ 開発用：データリセットボタン（テスト後に削除） ▼▼▼ */}
+          <View style={styles.settingsDivider} />
+          <View style={styles.settingsSection}>
+            <TouchableOpacity
+              onPress={() => {
+                Alert.alert(
+                  '🗑 データリセット',
+                  '全設定・チュートリアル履歴を削除します。\nアプリを再起動してください。',
+                  [
+                    { text: 'キャンセル', style: 'cancel' },
+                    { text: 'リセット', style: 'destructive', onPress: async () => {
+                      await AsyncStorage.multiRemove([
+                        SETTINGS_KEY,
+                        TUTORIAL_KEY,
+                        SAVED_PHOTOS_KEY,
+                        AUTO_DELETE_KEY,
+                        AUDIO_SETTINGS_KEY,
+                      ]);
+                      Alert.alert('完了', 'データを削除しました。\nアプリを再起動してください。');
+                    }},
+                  ]
+                );
+              }}
+              style={{ backgroundColor: '#c0392b', borderRadius: 8, padding: 12, alignItems: 'center' }}
+            >
+              <Text style={{ color: '#fff', fontWeight: 'bold' }}>【開発用】全データリセット</Text>
+            </TouchableOpacity>
+          </View>
+          {/* ▲▲▲ 開発用：データリセットボタン（テスト後に削除） ▲▲▲ */}
         </View>
       )}
 
@@ -2114,8 +2335,10 @@ export default function App() {
           transform: [{ translateY: gallerySlideY }],
           opacity: galleryOpacity,
         }]}>
-          {/* ヘッダー */}
-          <View style={[styles.galleryHeader, selectionMode && styles.galleryHeaderSelection]}>
+          {/* ヘッダー（チュートリアルstep5〜10中は操作無効） */}
+          <View
+            pointerEvents={[5,6,7,8,9,10].includes(tutorialStep) ? 'none' : 'auto'}
+            style={[styles.galleryHeader, selectionMode && styles.galleryHeaderSelection]}>
             {selectionMode ? (
               // 選択モード中ヘッダー
               <>
@@ -2159,8 +2382,9 @@ export default function App() {
             )}
           </View>
 
-          {/* グリッド */}
+          {/* グリッド（step5はサムネイルタップのみ許可、step6〜10は完全無効） */}
           <FlatList
+            pointerEvents={[6,7,8,9,10].includes(tutorialStep) ? 'none' : 'auto'}
             data={galleryAssets}
             keyExtractor={item => item.id}
             numColumns={3}
@@ -2225,7 +2449,7 @@ export default function App() {
               )}
               {/* ✕ボタン・カウンター・削除・保護：アニメーション中は非表示 */}
               {pendingIndex === null && (
-                <>
+                <View pointerEvents={[6,7,8].includes(tutorialStep) ? 'none' : 'auto'}>
                   <TouchableOpacity style={styles.viewerClose} onPress={closeViewer}>
                     <Text style={styles.viewerCloseText}>✕</Text>
                   </TouchableOpacity>
@@ -2242,15 +2466,199 @@ export default function App() {
                   <TouchableOpacity style={styles.viewerDeleteBtn} onPress={handleViewerDelete}>
                     <Text style={styles.viewerActionText}>🗑</Text>
                   </TouchableOpacity>
-                </>
+                </View>
               )}
             </Animated.View>
           )}
+
+          {/* ── ギャラリー内チュートリアルオーバーレイ（step5〜10） ── */}
+          {[5,6,7,8,9,10].includes(tutorialStep) && renderTutorialOverlay()}
+
         </Animated.View>
       </Modal>
 
+      {/* ── メイン画面チュートリアルオーバーレイ（step1〜4, 11〜18） ── */}
+      {tutorialStep > 0 && !([5,6,7,8,9,10].includes(tutorialStep)) && renderTutorialOverlay()}
+
     </View>
   );
+
+  // ── チュートリアルオーバーレイ共通レンダー関数 ──
+  function renderTutorialOverlay() {
+    // シャッター処理中（step3/12）はバブルを非表示（誤スキップ防止）
+    if (tutorialCapturing) return null;
+
+    // ── STEP_DATA ──
+    // arrow: 絵文字。上向き系（↗️ ⬆️）はバブルの上に表示、下向き系はバブルの下に表示
+    // bubbleY: バブルの top 位置（画面座標）
+    // spotlight: 特定ボタン強調用リング（tutorialOverlay 内に絶対座標で描画）
+    const STEP_DATA = {
+      1:  {
+        msg: 'このアプリは、ランダムに出現する生き物を撮影するアプリです。\nチュートリアルを開始しますか？',
+        arrow: null, bubbleY: SCREEN_H * 0.32, showNext: false,
+      },
+      2:  {
+        msg: 'この🔵シャッターボタンを押して、\n生き物を撮影しよう！',
+        arrow: '⬇️', bubbleY: SCREEN_H * 0.42, showNext: true,
+      },
+      3:  {
+        msg: '生き物が出現したよ。\nシャッターを押して！',
+        arrow: null, bubbleY: SCREEN_H * 0.52, showNext: false,
+      },
+      4:  {
+        msg: '撮影した写真は、この🖼️ボタンをタップすると\nギャラリーで観られるよ。',
+        arrow: '↙️', bubbleY: SCREEN_H * 0.42, showNext: true,
+      },
+      5:  {
+        msg: '見たい写真をタップしてね。',
+        arrow: '⬆️', bubbleY: SCREEN_H * 0.68, showNext: false,
+      },
+      6:  {
+        msg: '削除したいときは、\nこの🗑ゴミ箱アイコンをタップしてね。',
+        arrow: '↘️', bubbleY: SCREEN_H * 0.32, showNext: true,
+        spotlight: { bottom: 40, right: 24, width: 52, height: 52, emoji: '🗑', radius: 26, tappable: true },
+      },
+      7:  {
+        msg: '写真を間違えて消したくないときは、\nこの☆アイコンをタップして保護してね。',
+        arrow: '↙️', bubbleY: SCREEN_H * 0.32, showNext: true,
+        spotlight: { bottom: 40, left: 24, width: 52, height: 52, emoji: '☆', radius: 26, tappable: true },
+      },
+      8:  {
+        msg: '画面右上の✕アイコンをタップすると、\n一覧に戻るよ。',
+        arrow: '↗️', bubbleY: SCREEN_H * 0.55, showNext: true,
+        spotlight: { top: 55, right: 20, width: 44, height: 44, emoji: '✕', radius: 22, emojiColor: '#fff', emojiBold: true, tappable: true },
+      },
+      9:  {
+        msg: 'この☑️アイコンをタップすると、\n複数の写真をまとめて削除・保護できるよ。',
+        arrow: '↗️', bubbleY: SCREEN_H * 0.45, showNext: true,
+        spotlight: { top: 55, right: 58, width: 40, height: 40, emoji: '☑️', radius: 20, tappable: true },
+      },
+      10: {
+        msg: '画面右上の✕アイコンをタップすると、\nカメラ画面に戻るよ。',
+        arrow: '↗️', bubbleY: SCREEN_H * 0.45, showNext: true,
+        spotlight: { top: 55, right: 20, width: 36, height: 36, emoji: '✕', radius: 18, emojiColor: '#fff', emojiBold: true, tappable: true },
+      },
+      11: {
+        msg: 'この🔔チャイムが鳴ったら、\nラッキーチャンス！',
+        arrow: null, bubbleY: SCREEN_H * 0.32, showNext: true,
+      },
+      12: {
+        msg: '特殊なアイテムを撮影して、\nアイテムをゲットしよう！',
+        arrow: '⬇️', bubbleY: SCREEN_H * 0.42, showNext: false,
+      },
+      14: {
+        msg: '手に入れたテーマは、\nこの⚙️設定アイコンから使えるよ。',
+        arrow: '↘️', bubbleY: SCREEN_H * 0.42, showNext: true,
+      },
+      15: {
+        msg: '「テーマ」をタップして、\n撮影したいテーマを選択しよう。',
+        arrow: '⬆️', bubbleY: SCREEN_H * 0.62, showNext: true,
+        // spotlight は動的計算のため下記参照
+      },
+      17: {
+        msg: '画面右上の✕アイコンをタップすると、\nカメラ画面に戻るよ。',
+        arrow: '↗️', bubbleY: SCREEN_H * 0.52, showNext: true,
+        spotlight: { top: 55, right: 20, width: 44, height: 44, emoji: '✕', radius: 22, emojiColor: '#fff', emojiBold: true, tappable: true },
+      },
+      18: {
+        msg: 'これでチュートリアルは終了だよ。\nいろいろな生き物や、楽しいアイテムを撮影してね！',
+        arrow: null, bubbleY: SCREEN_H * 0.32, showNext: true,
+      },
+    };
+
+    const data = STEP_DATA[tutorialStep];
+    if (!data) return null;
+    const { msg, arrow, bubbleY, showNext, spotlight } = data;
+    const arrowAbove = arrow && ['↗️', '⬆️'].includes(arrow);
+
+    // step 15：テーマボタンとドロップダウン行を themeDropdownOpen に応じて動的ハイライト
+    // 設定画面のレイアウト基準値（ヘッダー高さ等）
+    const SETTINGS_HEADER_H  = 96;  // paddingTop:55 + テキスト + paddingBottom:16 + border:1
+    const THEME_SECTION_PAD  = 16;  // settingsSection paddingTop
+    const THEME_LABEL_H      = 28;  // "テーマ：" ラベル（fontSize:13 + marginBottom:10）
+    const THEME_BTN_OFFSET   = 6;   // theme button marginTop
+    const THEME_BTN_H        = 36;  // テーマボタン行の高さ
+    const THEME_ROW_H        = 64;  // 展開時の各テーマ行の高さ（paddingVertical:14 + ラベル + フレーム数）
+    const themeSpotlightTop  = SETTINGS_HEADER_H + THEME_SECTION_PAD + THEME_LABEL_H + THEME_BTN_OFFSET;
+    const themeCount         = unlockedThemes.length; // チュートリアル中は必ず2以上
+    const effectiveSpotlight = tutorialStep === 15
+      ? {
+          top: themeSpotlightTop,
+          left: 20, right: 20,
+          height: themeDropdownOpen ? THEME_BTN_H + THEME_ROW_H * themeCount : THEME_BTN_H,
+          radius: 8,
+          tappable: false, // 実際のテーマボタンが操作可能なのでスポットは装飾のみ
+        }
+      : spotlight;
+
+    return (
+      <View style={styles.tutorialOverlay} pointerEvents="box-none">
+        <View style={styles.tutorialBg} pointerEvents="none" />
+
+        {/* スポットライト：特定ボタンを強調するリング（tappable なら次へ扱い） */}
+        {effectiveSpotlight && (() => {
+          const sp = effectiveSpotlight;
+          const spotStyle = [{
+            position: 'absolute',
+            borderRadius: sp.radius,
+            borderWidth: 2.5,
+            borderColor: '#4CD964',
+            backgroundColor: 'rgba(76,217,100,0.15)',
+            alignItems: 'center', justifyContent: 'center',
+          },
+            sp.top    !== undefined && { top: sp.top },
+            sp.bottom !== undefined && { bottom: sp.bottom },
+            sp.left   !== undefined && { left: sp.left },
+            sp.right  !== undefined && { right: sp.right },
+            sp.width  !== undefined && { width: sp.width },
+            sp.height !== undefined && { height: sp.height },
+          ];
+          const inner = sp.emoji ? (
+            <Text style={{ fontSize: 22, color: sp.emojiColor, fontWeight: sp.emojiBold ? 'bold' : 'normal' }}>
+              {sp.emoji}
+            </Text>
+          ) : null;
+          return sp.tappable ? (
+            <TouchableOpacity onPress={advanceTutorial} style={spotStyle}>
+              {inner}
+            </TouchableOpacity>
+          ) : (
+            <View pointerEvents="none" style={spotStyle}>{inner}</View>
+          );
+        })()}
+
+        {/* メッセージバブル */}
+        <View style={[styles.tutorialBubbleWrapper, { top: bubbleY }]}>
+          {arrow && arrowAbove && <Text style={styles.tutorialArrow}>{arrow}</Text>}
+          <View style={styles.tutorialBubble}>
+            <Text style={styles.tutorialMsg}>{msg}</Text>
+            {tutorialStep === 1 ? (
+              <View style={styles.tutorialBtnRow}>
+                <TouchableOpacity style={styles.tutorialBtnPrimary} onPress={advanceTutorial}>
+                  <Text style={styles.tutorialBtnText}>はい</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.tutorialBtnSecondary} onPress={skipTutorial}>
+                  <Text style={styles.tutorialBtnText}>いいえ</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.tutorialBtnRow}>
+                {showNext && (
+                  <TouchableOpacity style={styles.tutorialBtnPrimary} onPress={advanceTutorial}>
+                    <Text style={styles.tutorialBtnText}>次へ</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity style={styles.tutorialBtnSkip} onPress={skipTutorial}>
+                  <Text style={styles.tutorialBtnSkipText}>スキップ</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+          {arrow && !arrowAbove && <Text style={styles.tutorialArrow}>{arrow}</Text>}
+        </View>
+      </View>
+    );
+  }
 }
 
 const styles = StyleSheet.create({
@@ -2431,6 +2839,59 @@ const styles = StyleSheet.create({
     width: 56, height: 56, borderRadius: 28,
     backgroundColor: '#ccc',
     borderWidth: 1, borderColor: '#aaa',
+  },
+  // ── チュートリアルUI ──
+  tutorialOverlay: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    zIndex: 300, // 設定オーバーレイ(200)より上
+  },
+  tutorialBg: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  tutorialBubbleWrapper: {
+    position: 'absolute',
+    left: 20, right: 20,
+    alignItems: 'center',
+  },
+  tutorialBubble: {
+    width: '100%',
+    backgroundColor: 'rgba(20,20,40,0.93)',
+    borderRadius: 16,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
+    paddingHorizontal: 20, paddingVertical: 16,
+    alignItems: 'center',
+    shadowColor: '#000', shadowOpacity: 0.6, shadowRadius: 10,
+  },
+  tutorialMsg: {
+    color: '#fff', fontSize: 15, lineHeight: 22,
+    textAlign: 'center', marginBottom: 8,
+  },
+  tutorialArrow: {
+    fontSize: 48, // ラージサイズ
+    marginVertical: 4,
+  },
+  tutorialBtnRow: {
+    flexDirection: 'row', gap: 12, marginTop: 8,
+  },
+  tutorialBtnPrimary: {
+    backgroundColor: '#4CD964',
+    paddingHorizontal: 28, paddingVertical: 10, borderRadius: 8,
+  },
+  tutorialBtnSecondary: {
+    backgroundColor: '#555',
+    paddingHorizontal: 28, paddingVertical: 10, borderRadius: 8,
+  },
+  tutorialBtnText: {
+    color: '#fff', fontSize: 15, fontWeight: 'bold',
+  },
+  tutorialBtnSkip: {
+    backgroundColor: 'transparent',
+    paddingHorizontal: 16, paddingVertical: 10,
+    borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
+  },
+  tutorialBtnSkipText: {
+    color: 'rgba(255,255,255,0.6)', fontSize: 13,
   },
   // ── 削除確認UI ──
 });
