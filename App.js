@@ -12,6 +12,7 @@ import {
   TouchableOpacity,
   View,
   Alert,
+  Easing,
 } from 'react-native';
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -450,12 +451,15 @@ const INITIAL_FRAME_COUNTS = Object.fromEntries(ALL_THEME_IDS.map(id => [id, 0])
 // テーマ別の生き物セット
 const CREATURE_SETS = {
   default: [
-    { id: 'octopus', emoji: '🐙', size: 80 },
-    { id: 'alien',   emoji: '👽', size: 70 },
+    { id: 'octopus', emoji: '🐙',  size: 80 },
+    { id: 'alien',   emoji: '👽',  size: 70 },
     { id: 'spider',  emoji: '🕷️', size: 60 },
-    { id: 'ghost',   emoji: '👻', size: 75 },
+    { id: 'ghost',   emoji: '👻',  size: 75 },
     { id: 'eye',     emoji: '👁️', size: 65 },
-    { id: 'bug',     emoji: '🐛', size: 55 },
+    { id: 'bug',     emoji: '🐛',  size: 55 },
+    // 追加（6→8）
+    { id: 'microbe', emoji: '🦠',  size: 55 },
+    { id: 'zombie',  emoji: '🧟',  size: 75 },
   ],
   flower: [
     { id: 'rose',      emoji: '🌹', size: 70 },
@@ -463,13 +467,21 @@ const CREATURE_SETS = {
     { id: 'cherry',    emoji: '🌸', size: 75 },
     { id: 'sunflower', emoji: '🌻', size: 80 },
     { id: 'bouquet',   emoji: '💐', size: 85 },
+    // 追加（5→8）
+    { id: 'hibiscus',  emoji: '🌺', size: 70 },
+    { id: 'blossom',   emoji: '🌼', size: 65 },
+    { id: 'lotus',     emoji: '🪷', size: 75 },
   ],
   stylish: [
-    { id: 'diamond', emoji: '💎', size: 65 },
-    { id: 'sparkle', emoji: '✨', size: 70 },
-    { id: 'ring',    emoji: '💍', size: 60 },
-    { id: 'sheart',  emoji: '💖', size: 75 },
-    { id: 'ribbon',  emoji: '🎀', size: 65 },
+    { id: 'diamond',  emoji: '💎', size: 65 },
+    { id: 'sparkle',  emoji: '✨', size: 70 },
+    { id: 'ring',     emoji: '💍', size: 60 },
+    { id: 'sheart',   emoji: '💖', size: 75 },
+    { id: 'ribbon',   emoji: '🎀', size: 65 },
+    // 追加（5→8）
+    { id: 'crown',    emoji: '👑', size: 70 },
+    { id: 'fan',      emoji: '🪭', size: 65 },
+    { id: 'lipstick', emoji: '💄', size: 55 },
   ],
   ocean: [
     { id: 'jellyfish', emoji: '🪼', size: 70 },
@@ -477,6 +489,10 @@ const CREATURE_SETS = {
     { id: 'whale',     emoji: '🐳', size: 90 },
     { id: 'octopus2',  emoji: '🐙', size: 80 },
     { id: 'dolphin',   emoji: '🐬', size: 85 },
+    // 追加（5→8）
+    { id: 'shell',     emoji: '🐚', size: 65 },
+    { id: 'crab',      emoji: '🦀', size: 65 },
+    { id: 'shark',     emoji: '🦈', size: 85 },
   ],
   forest: [
     { id: 'squirrel', emoji: '🐿️', size: 60 },
@@ -484,6 +500,10 @@ const CREATURE_SETS = {
     { id: 'bear',     emoji: '🐻',  size: 85 },
     { id: 'raccoon',  emoji: '🦝',  size: 70 },
     { id: 'owl',      emoji: '🦉',  size: 65 },
+    // 追加（5→8）
+    { id: 'fox',      emoji: '🦊',  size: 65 },
+    { id: 'deer',     emoji: '🦌',  size: 80 },
+    { id: 'rabbit',   emoji: '🐇',  size: 60 },
   ],
   savanna: [
     { id: 'lion',     emoji: '🦁', size: 85 },
@@ -491,6 +511,10 @@ const CREATURE_SETS = {
     { id: 'elephant', emoji: '🐘', size: 95 },
     { id: 'zebra',    emoji: '🦓', size: 80 },
     { id: 'flamingo', emoji: '🦩', size: 75 },
+    // 追加（5→8）
+    { id: 'rhino',    emoji: '🦏', size: 90 },
+    { id: 'leopard',  emoji: '🐆', size: 80 },
+    { id: 'hippo',    emoji: '🦛', size: 95 },
   ],
 };
 
@@ -555,8 +579,41 @@ const CREATURE_ANIM = {
   elephant: 'edge3',
   zebra:    'edge',
   flamingo: 'fadein',
+  // サバンナ追加分
+  rhino:    'edge3',
+  leopard:  'edge3',
+  hippo:    'edge3',
+  // デフォルト追加分
+  microbe:  'fadein',
+  zombie:   'edge',
+  // フラワー追加分
+  hibiscus: 'fadein',
+  blossom:  'fadein',
+  lotus:    'fadein',
+  // おしゃれ追加分
+  crown:    'fadein',
+  fan:      'fadein',
+  lipstick: 'fadein',
+  // 海追加分
+  shell:    'fadein',  // フェードイン（砂浜から現れるイメージ）
+  crab:     'edge3',
+  shark:    'edge3',
+  // 森追加分
+  fox:      'edge',
+  deer:     'edge3',
+  rabbit:   'edge3',
 };
 function getAnimMode(id) { return CREATURE_ANIM[id] || 'edge'; }
+
+// テーマごとの特殊アニメーション（出現のたびに50%の確率で通常アニメーションと差し替え）
+const THEME_SPECIAL_ANIMS = {
+  default: ['bounce',   'spin_in' ],  // 不気味な落下・回転出現
+  flower:  ['float_up', 'spin_in' ],  // 花びらが浮かぶ・ひらひら回転出現
+  stylish: ['spin_in',  'float_up'],  // キラキラ回転・ひらひら浮く
+  ocean:   ['float_up', 'bounce'  ],  // 水中から浮上・底から跳ねる
+  forest:  ['bounce',   'spin_in' ],  // 木から落下・旋回しながら降りる
+  savanna: ['bounce',   'spin_in' ],  // ドシンと着地・くるっと舞い降りる
+};
 
 
 // vp: { x, y, w, h, fullScreen } — creature spawn viewport
@@ -627,28 +684,43 @@ function getEdgeSetup(edge, size, vp) {
 const FULL_VP = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, fullScreen: true };
 
 function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onCapturable, onUncapturable, vp, isSpecial, itemLabel, pauseAfterCapturable }) {
-  const viewport = vp ?? FULL_VP;
-  const isFade   = mode === 'fadein';
-  const edgeSetup = isFade ? null : getEdgeSetup(edge, creature.size, viewport);
-  // fadein も安全フレーム内にランダム配置
+  const viewport      = vp ?? FULL_VP;
+  const { x: VX, y: VY, w: VW, h: VH } = viewport;
+  const isFade        = mode === 'fadein';
+  const isBounce      = mode === 'bounce';
+  const isFloatUp     = mode === 'float_up';
+  const isSpinIn      = mode === 'spin_in';
+  const isSpecialMode = isBounce || isFloatUp || isSpinIn;
+  const edgeSetup = (isFade || isSpecialMode) ? null : getEdgeSetup(edge, creature.size, viewport);
   const sf = getSafeFrame(viewport);
-  const initTop  = isFade ? sf.top  + Math.random() * Math.max(0, sf.bottom - sf.top  - creature.size) : edgeSetup.initTop;
-  const initLeft = isFade ? sf.left + Math.random() * Math.max(0, sf.right  - sf.left - creature.size) : edgeSetup.initLeft;
-  const enterTo  = isFade ? null : edgeSetup.enterTo;
+  // bounce は横から入る：左右どちらからかを決定
+  const bounceFromLeft = isBounce ? Math.random() < 0.5 : false;
+  const initTop  = isFloatUp  ? VY + VH   // 画面下外から浮き上がり
+                 : isBounce   ? sf.bottom - creature.size  // 床レベルから横バウンド開始
+                 : isSpinIn   ? sf.top  + Math.random() * Math.max(0, sf.bottom - sf.top  - creature.size)
+                 : isFade     ? sf.top  + Math.random() * Math.max(0, sf.bottom - sf.top  - creature.size)
+                 :               edgeSetup.initTop;
+  const initLeft = isBounce               ? (bounceFromLeft ? VX - creature.size : VX + VW)  // 画面横外から
+                 : (isSpecialMode || isFade) ? sf.left + Math.random() * Math.max(0, sf.right - sf.left - creature.size)
+                 :                             edgeSetup.initLeft;
+  const enterTo  = (isFade || isSpecialMode) ? null : edgeSetup.enterTo;
 
   const topAnim     = useRef(new Animated.Value(initTop)).current;
   const leftAnim    = useRef(new Animated.Value(initLeft)).current;
   const scaleAnim   = useRef(new Animated.Value(1)).current;
-  const opacityAnim = useRef(new Animated.Value(isFade ? 0 : 1)).current;
+  const opacityAnim = useRef(new Animated.Value(isFade || isFloatUp || isSpinIn ? 0 : 1)).current;
+  const rotateAnim  = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     posRef.current = { top: initTop, left: initLeft };
     const tl = topAnim.addListener(({ value })  => { posRef.current.top  = value; });
     const ll = leftAnim.addListener(({ value }) => { posRef.current.left = value; });
-    // 生き物の最終停止座標をスコープへ通知
-    const finalTop  = isFade ? initTop  : (enterTo?.top  !== undefined ? enterTo.top  : initTop);
-    const finalLeft = isFade ? initLeft : (enterTo?.left !== undefined ? enterTo.left : initLeft);
-    onFinalPos?.({ top: finalTop, left: finalLeft });
+    // 生き物の最終停止座標をスコープへ通知（特殊モードは入場アニメーション内で呼ぶ）
+    if (!isSpecialMode) {
+      const finalTop  = isFade ? initTop  : (enterTo?.top  !== undefined ? enterTo.top  : initTop);
+      const finalLeft = isFade ? initLeft : (enterTo?.left !== undefined ? enterTo.left : initLeft);
+      onFinalPos?.({ top: finalTop, left: finalLeft });
+    }
     let alive = true;
 
     const middle = Animated.sequence([
@@ -673,6 +745,71 @@ function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onC
               .start(({ finished }) => { if (finished && alive) onDone(); });
           });
         });
+    } else if (isBounce) {
+      // 横から入りながら大小の放物線バウンド → フェードアウト退場
+      const safeW      = sf.right  - sf.left;
+      const safeH      = sf.bottom - sf.top;
+      const groundY    = sf.bottom - creature.size;               // 着地する床の高さ
+      const targetLeft = sf.left + safeW * 0.2 + Math.random() * safeW * 0.4;
+      const peakY1     = groundY - safeH * 0.55;                 // 大きな弧の頂点
+      const peakY2     = groundY - safeH * 0.25;                 // 小さな弧の頂点
+      onFinalPos?.({ top: groundY, left: targetLeft });
+      Animated.parallel([
+        // 横: 画面横外から中央へスムーズに移動（合計1000ms）
+        Animated.timing(leftAnim, { toValue: targetLeft, duration: 1000, useNativeDriver: false }),
+        // 縦: 大小の放物線を連続バウンド（合計1000ms）
+        Animated.sequence([
+          Animated.timing(topAnim, { toValue: peakY1,  duration: 300, easing: Easing.out(Easing.quad), useNativeDriver: false }),
+          Animated.timing(topAnim, { toValue: groundY, duration: 280, easing: Easing.in(Easing.quad),  useNativeDriver: false }),
+          Animated.timing(topAnim, { toValue: peakY2,  duration: 210, easing: Easing.out(Easing.quad), useNativeDriver: false }),
+          Animated.timing(topAnim, { toValue: groundY, duration: 210, easing: Easing.in(Easing.quad),  useNativeDriver: false }),
+        ]),
+      ]).start(({ finished }) => {
+        if (!finished || !alive) return;
+        onCapturable?.();
+        if (pauseAfterCapturable) return;
+        middle.start(({ finished }) => {
+          if (!finished || !alive) return;
+          onUncapturable?.();
+          Animated.timing(opacityAnim, { toValue: 0, duration: 400, useNativeDriver: false })
+            .start(({ finished }) => { if (finished && alive) onDone(); });
+        });
+      });
+    } else if (isFloatUp) {
+      // 下から浮き上がり＋フェードイン → フェードアウト退場
+      const targetTop = sf.top + Math.random() * Math.max(0, sf.bottom - sf.top - creature.size);
+      onFinalPos?.({ top: targetTop, left: initLeft });
+      Animated.parallel([
+        Animated.timing(topAnim,     { toValue: targetTop, duration: 800, useNativeDriver: false }),
+        Animated.timing(opacityAnim, { toValue: 1,         duration: 800, useNativeDriver: false }),
+      ]).start(({ finished }) => {
+        if (!finished || !alive) return;
+        onCapturable?.();
+        if (pauseAfterCapturable) return;
+        middle.start(({ finished }) => {
+          if (!finished || !alive) return;
+          onUncapturable?.();
+          Animated.timing(opacityAnim, { toValue: 0, duration: 400, useNativeDriver: false })
+            .start(({ finished }) => { if (finished && alive) onDone(); });
+        });
+      });
+    } else if (isSpinIn) {
+      // 回転しながらフェードイン → フェードアウト退場
+      onFinalPos?.({ top: initTop, left: initLeft });
+      Animated.parallel([
+        Animated.timing(opacityAnim, { toValue: 1, duration: 700, useNativeDriver: false }),
+        Animated.timing(rotateAnim,  { toValue: 1, duration: 700, useNativeDriver: false }),
+      ]).start(({ finished }) => {
+        if (!finished || !alive) return;
+        onCapturable?.();
+        if (pauseAfterCapturable) return;
+        middle.start(({ finished }) => {
+          if (!finished || !alive) return;
+          onUncapturable?.();
+          Animated.timing(opacityAnim, { toValue: 0, duration: 400, useNativeDriver: false })
+            .start(({ finished }) => { if (finished && alive) onDone(); });
+        });
+      });
     } else {
       const enterAnims = [];
       if (enterTo.top  !== undefined) enterAnims.push(Animated.timing(topAnim,  { toValue: enterTo.top,  duration: 600, useNativeDriver: false }));
@@ -698,6 +835,7 @@ function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onC
       leftAnim.stopAnimation();
       opacityAnim.stopAnimation();
       scaleAnim.stopAnimation();
+      rotateAnim.stopAnimation();
       topAnim.removeListener(tl);
       leftAnim.removeListener(ll);
     };
@@ -707,7 +845,11 @@ function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onC
     <Animated.View style={[styles.creature, {
       top: topAnim, left: leftAnim,
       opacity: opacityAnim,
-      transform: [{ scale: scaleAnim }, ...(edge === 'left' ? [{ scaleX: -1 }] : [])],
+      transform: [
+        { rotate: rotateAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] }) },
+        { scale: scaleAnim },
+        ...(edge === 'left' ? [{ scaleX: -1 }] : []),
+      ],
     }]}>
       <Text style={{ fontSize: creature.size * 0.8 }}>{creature.emoji}</Text>
       {isSpecial && itemLabel && (
@@ -1151,10 +1293,18 @@ export default function App() {
         if (alt.id !== creature.id) creature = alt;
       }
       lastCreatureIdRef.current = creature.id;
-      const mode     = getAnimMode(creature.id);
-      const edge     = mode === 'fadein' ? null
-                     : mode === 'top'    ? 'top'
-                     : mode === 'edge3'  ? EDGE3_POOL[Math.floor(Math.random() * EDGE3_POOL.length)]
+      // 50%の確率でテーマ固有の特殊アニメーションに差し替え
+      const normalMode   = getAnimMode(creature.id);
+      const specialAnims = THEME_SPECIAL_ANIMS[theme];
+      const mode         = (specialAnims && Math.random() < 0.5)
+        ? specialAnims[Math.floor(Math.random() * specialAnims.length)]
+        : normalMode;
+      const edge     = mode === 'fadein'   ? null
+                     : mode === 'bounce'   ? null
+                     : mode === 'float_up' ? null
+                     : mode === 'spin_in'  ? null
+                     : mode === 'top'      ? 'top'
+                     : mode === 'edge3'    ? EDGE3_POOL[Math.floor(Math.random() * EDGE3_POOL.length)]
                      : EDGE_POOL[Math.floor(Math.random() * EDGE_POOL.length)];
       setActiveCreature({ creature, mode, edge, key: Date.now(), vp });
     }, delay);
@@ -1164,6 +1314,22 @@ export default function App() {
     scheduleNextCreature();
     return () => clearTimeout(timerRef.current);
   }, [scheduleNextCreature]);
+
+  // 設定・ギャラリーが開いたらアニメーション停止、閉じたら再スケジュール
+  const wasOverlayOpenRef = useRef(false);
+  useEffect(() => {
+    const isOpen = settingsVisible || galleryVisible;
+    if (isOpen) {
+      clearTimeout(timerRef.current);
+      setActiveCreature(null);
+      capturableRef.current = false;
+      setCreatureCapturable(false);
+      wasOverlayOpenRef.current = true;
+    } else if (wasOverlayOpenRef.current) {
+      wasOverlayOpenRef.current = false;
+      if (tutorialStepRef.current === 0) scheduleNextCreatureRef.current?.();
+    }
+  }, [settingsVisible, galleryVisible]);
 
   // 超過モード検知時：ダイアログを表示してからギャラリーを開く（起動時のみ）
   useEffect(() => {
@@ -1408,7 +1574,7 @@ export default function App() {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.9 });
       const frameSource = (frameEnabled && (frameCountsRef.current[theme] ?? 0) > 0)
         ? (THEME_FRAMES[theme] ?? null) : null;
-      setCompositing({ photoUri: photo.uri, creatureSnapshot, frameSource, usedFrameTheme: frameSource ? theme : null, harmonyEntries, wasScope });
+      setCompositing({ photoUri: photo.uri, creatureSnapshot, frameSource, usedFrameTheme: frameSource ? theme : null, harmonyEntries, wasScope, fullScreen });
     } catch (e) {
       isTakingPictureRef.current = false;
       Alert.alert(t('alert_photo_error_title'), t('alert_photo_error_body'));
@@ -1845,6 +2011,7 @@ export default function App() {
     const item = galleryAssets[selectedIndexRef.current];
     if (!item) return;
     if (savedPhotoIdsRef.current[item.id]) {
+      playSE(SE_NO_CREATURE);
       Alert.alert(t('alert_delete_protected_title'), t('alert_delete_protected_body'));
       return;
     }
@@ -2035,6 +2202,7 @@ export default function App() {
     const savedIds = savedPhotoIdsRef.current;
     const hasSaved = selectedIds.some(id => savedIds[id]);
     if (hasSaved) {
+      playSE(SE_NO_CREATURE);
       Alert.alert(
         t('alert_delete_protected_title'),
         t('alert_delete_protected_multi'),
@@ -2253,22 +2421,20 @@ export default function App() {
 
       {compositing && (
         <View ref={compositeRef} style={StyleSheet.absoluteFill} collapsable={false}>
-          {compositing.frameSource ? (
+          {(() => {
+            // 非fullScreenモード：カメラプレビュー高さ(CAMERA_AREA_H)と合成高さ(SCREEN_H)のスケール差で
+            // 生き物のY座標を補正する（写真は全画面表示のままにして白帯を防ぐ）
+            const yScale = compositing.fullScreen ? 1 : SCREEN_H / CAMERA_AREA_H;
+            const adjTop  = (top)  => top  * yScale;
+            return compositing.frameSource ? (
             <>
-              {/* 写真＋生き物を80%エリアに縮小して中央配置 */}
-              <View style={{
-                position: 'absolute',
-                top:    SCREEN_H * 0.05,
-                left:   SCREEN_W * 0.05,
-                width:  SCREEN_W * 0.9,
-                height: SCREEN_H * 0.9,
-                overflow: 'hidden',
-              }}>
+              {/* 写真＋生き物をフルサイズで配置 */}
+              <View style={StyleSheet.absoluteFill}>
                 <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
                 {compositing.creatureSnapshot && (
                   <View style={[styles.creature, {
-                    top:  compositing.creatureSnapshot.pos.top  - SCREEN_H * 0.05,
-                    left: compositing.creatureSnapshot.pos.left - SCREEN_W * 0.05,
+                    top:  adjTop(compositing.creatureSnapshot.pos.top),
+                    left: compositing.creatureSnapshot.pos.left,
                     transform: compositing.creatureSnapshot.edge === 'left' ? [{ scaleX: -1 }] : [],
                   }]}>
                     <Text style={{ fontSize: compositing.creatureSnapshot.creature.size * 0.8 }}>
@@ -2278,8 +2444,8 @@ export default function App() {
                 )}
                 {compositing.harmonyEntries && compositing.harmonyEntries.map((entry, i) => (
                   <View key={`hf${i}`} style={[styles.creature, {
-                    top:  entry.pos.top  - SCREEN_H * 0.05,
-                    left: entry.pos.left - SCREEN_W * 0.05,
+                    top:  adjTop(entry.pos.top),
+                    left: entry.pos.left,
                   }]}>
                     <Text style={{ fontSize: entry.creature.size * 0.8 }}>{entry.creature.emoji}</Text>
                   </View>
@@ -2298,7 +2464,7 @@ export default function App() {
               <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
               {compositing.creatureSnapshot && (
                 <View style={[styles.creature, {
-                  top:  compositing.creatureSnapshot.pos.top,
+                  top:  adjTop(compositing.creatureSnapshot.pos.top),
                   left: compositing.creatureSnapshot.pos.left,
                   transform: compositing.creatureSnapshot.edge === 'left' ? [{ scaleX: -1 }] : [],
                 }]}>
@@ -2308,12 +2474,13 @@ export default function App() {
                 </View>
               )}
               {compositing.harmonyEntries && compositing.harmonyEntries.map((entry, i) => (
-                <View key={`h${i}`} style={[styles.creature, { top: entry.pos.top, left: entry.pos.left }]}>
+                <View key={`h${i}`} style={[styles.creature, { top: adjTop(entry.pos.top), left: entry.pos.left }]}>
                   <Text style={{ fontSize: entry.creature.size * 0.8 }}>{entry.creature.emoji}</Text>
                 </View>
               ))}
             </>
-          )}
+          );
+          })()}
         </View>
       )}
 

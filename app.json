@@ -2,7 +2,7 @@
   "expo": {
     "name": "CreatureCamera",
     "slug": "CreatureCamera54",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -18,7 +18,9 @@
         "NSCameraUsageDescription": "生き物を呼び寄せるためにカメラを使います",
         "NSPhotoLibraryUsageDescription": "撮影した生き物の写真をギャラリーで表示します",
         "NSPhotoLibraryAddUsageDescription": "生き物と一緒に撮った写真を保存します",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "CFBundleDevelopmentRegion": "ja",
+        "CFBundleLocalizations": ["ja", "en"]
       },
       "bundleIdentifier": "com.tosumi.CreatureCamera"
     },
