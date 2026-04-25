@@ -964,6 +964,37 @@ export default function App() {
   const [compositing, setCompositing]       = useState(null);
   const [successPhoto, setSuccessPhoto]     = useState(null);
 
+  // ピンチズーム
+  const [zoomLevel, setZoomLevel]   = useState(0);
+  const zoomLevelRef                = useRef(0);
+  const pinchBaseDistRef            = useRef(0);
+  const pinchBaseZoomRef            = useRef(0);
+  const getPinchDist = (touches) => {
+    const [t0, t1] = touches;
+    return Math.hypot(t0.pageX - t1.pageX, t0.pageY - t1.pageY);
+  };
+  const cameraPinchResponder = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: (evt) => evt.nativeEvent.touches.length === 2,
+    onMoveShouldSetPanResponder:  (evt) => evt.nativeEvent.touches.length === 2,
+    onPanResponderGrant: (evt) => {
+      const { touches } = evt.nativeEvent;
+      if (touches.length === 2) {
+        pinchBaseDistRef.current = getPinchDist(touches);
+        pinchBaseZoomRef.current = zoomLevelRef.current;
+      }
+    },
+    onPanResponderMove: (evt) => {
+      const { touches } = evt.nativeEvent;
+      if (touches.length !== 2) return;
+      const scale       = getPinchDist(touches) / pinchBaseDistRef.current;
+      const delta       = scale - 1;
+      const sensitivity = delta > 0 ? 0.25 : 0.5;  // ピンチアウト（ズームイン）は遅く、ピンチイン（ズームアウト）は速く
+      const next        = Math.min(0.8, Math.max(0, pinchBaseZoomRef.current + delta * sensitivity));
+      zoomLevelRef.current = next;
+      setZoomLevel(next);
+    },
+  })).current;
+
   // 'album' = CreatureCameraアルバムに保存 / 'default' = 通常保存 / null = 初期化中
   const [saveMode, setSaveMode] = useState(null);
 
@@ -1617,6 +1648,8 @@ export default function App() {
           }
         }
 
+        zoomLevelRef.current = 0;
+        setZoomLevel(0);
         setSuccessPhoto(uri);
         Alert.alert(t('alert_photo_saved_title'), t('alert_photo_saved_body'), [
           { text: t('btn_ok'), onPress: async () => {
@@ -2370,11 +2403,14 @@ export default function App() {
 
       {/* ── カメラ映像 ── */}
       {fullScreen ? (
-        <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
+        <View style={StyleSheet.absoluteFill} {...cameraPinchResponder.panHandlers}>
+          <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" zoom={zoomLevel} />
+        </View>
       ) : (
         // フレームモード：上80%のみ
-        <View style={{ position: 'absolute', top: 0, left: 0, width: SCREEN_W, height: CAMERA_AREA_H }}>
-          <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
+        <View style={{ position: 'absolute', top: 0, left: 0, width: SCREEN_W, height: CAMERA_AREA_H }}
+              {...cameraPinchResponder.panHandlers}>
+          <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" zoom={zoomLevel} />
         </View>
       )}
       {/* カメラファインダーフレームオーバーレイ（生き物より前面・コンポジット中は非表示）
@@ -2454,7 +2490,7 @@ export default function App() {
               {/* フレームを最前面にフルサイズで配置 */}
               <Image
                 source={compositing.frameSource}
-                style={{ position: 'absolute', top: 0, left: 0, width: SCREEN_W, height: SCREEN_H }}
+                style={{ position: 'absolute', top: 0, left: 0, width: SCREEN_W, height: SCREEN_H, zIndex: 20 }}
                 resizeMode="stretch"
                 onLoad={() => { frameLoadResolveRef.current?.(); }}
               />
@@ -2572,7 +2608,7 @@ export default function App() {
               <Text style={[
                 styles.settingsClose,
                 tutorialStep === 15 && { opacity: 0.3 },
-                tutorialStep === 17 && { color: '#4CD964' },
+                tutorialStep === 17 && { color: '#c084fc' },
               ]}>✕</Text>
             </TouchableOpacity>
           </View>
@@ -2630,7 +2666,7 @@ export default function App() {
               <Switch
                 value={frameEnabled}
                 onValueChange={handleFrameToggle}
-                trackColor={{ false: '#555', true: '#4CD964' }}
+                trackColor={{ false: '#4a3060', true: '#c084fc' }}
                 thumbColor="#fff"
               />
             </View>
@@ -2649,7 +2685,7 @@ export default function App() {
                 value={saveMode === 'album'}
                 onValueChange={handleAlbumModeToggle}
                 disabled={saveMode === 'none'}
-                trackColor={{ false: '#555', true: '#4CD964' }}
+                trackColor={{ false: '#4a3060', true: '#c084fc' }}
                 thumbColor="#fff"
               />
             </View>
@@ -2675,7 +2711,7 @@ export default function App() {
                       setAutoDelete(v);
                       persistAutoDelete(v, autoDeleteTarget);
                     }}
-                    trackColor={{ false: '#555', true: '#4CD964' }}
+                    trackColor={{ false: '#4a3060', true: '#c084fc' }}
                     thumbColor="#fff"
                   />
                 </View>
@@ -2717,7 +2753,7 @@ export default function App() {
               <Switch
                 value={!fullScreen}
                 onValueChange={(v) => handleFullScreenToggle(!v)}
-                trackColor={{ false: '#555', true: '#4CD964' }}
+                trackColor={{ false: '#4a3060', true: '#c084fc' }}
                 thumbColor="#fff"
               />
             </View>
@@ -2739,7 +2775,7 @@ export default function App() {
                   setBgmEnabled(v);
                   persistAudioSettings(v, seEnabled);
                 }}
-                trackColor={{ false: '#555', true: '#4CD964' }}
+                trackColor={{ false: '#4a3060', true: '#c084fc' }}
                 thumbColor="#fff"
               />
             </View>
@@ -2767,7 +2803,7 @@ export default function App() {
                   seEnabledRef.current = v;
                   persistAudioSettings(bgmEnabled, v);
                 }}
-                trackColor={{ false: '#555', true: '#4CD964' }}
+                trackColor={{ false: '#4a3060', true: '#c084fc' }}
                 thumbColor="#fff"
               />
             </View>
@@ -3182,37 +3218,37 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.4)',
   },
   settingsIcon: { fontSize: 28 },
-  settingsContainer: { flex: 1, backgroundColor: '#1c1c1e' },
+  settingsContainer: { flex: 1, backgroundColor: '#1a0e2e' },
   settingsOverlay:   { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 200 },
   settingsHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingTop: 55, paddingHorizontal: 20, paddingBottom: 16,
-    borderBottomWidth: 1, borderBottomColor: '#333',
+    borderBottomWidth: 1, borderBottomColor: '#2d1f45',
   },
-  settingsTitle: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
-  settingsClose: { color: '#fff', fontSize: 22, fontWeight: 'bold' },
+  settingsTitle: { color: '#f0d6ff', fontSize: 22, fontWeight: 'bold', letterSpacing: 0.5 },
+  settingsClose: { color: '#c9a0ff', fontSize: 22, fontWeight: 'bold' },
   settingsSection: { paddingHorizontal: 20, paddingVertical: 16 },
-  settingsSectionLabel: { color: '#aaa', fontSize: 13, marginBottom: 10, textTransform: 'uppercase' },
-  settingsDivider: { height: 1, backgroundColor: '#333', marginHorizontal: 0 },
+  settingsSectionLabel: { color: '#9b72cf', fontSize: 12, marginBottom: 10, textTransform: 'uppercase', letterSpacing: 1.2 },
+  settingsDivider: { height: 1, backgroundColor: '#2d1f45', marginHorizontal: 0 },
   themeRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#2c2c2e',
+    paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#2d1f45',
   },
-  themeLabel: { color: '#fff', fontSize: 16 },
-  themeFrameCount: { color: '#aaa', fontSize: 11, marginTop: 2 },
-  themeCheck: { color: '#4CD964', fontSize: 18, fontWeight: 'bold', marginRight: 8 },
+  themeLabel: { color: '#f0d6ff', fontSize: 16 },
+  themeFrameCount: { color: '#9b72cf', fontSize: 11, marginTop: 2 },
+  themeCheck: { color: '#c084fc', fontSize: 18, fontWeight: 'bold', marginRight: 8 },
   themeDeleteBtn: {
     paddingHorizontal: 8, paddingVertical: 4,
     marginLeft: 4,
   },
   themeDeleteText: { fontSize: 18 },
   settingsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  settingsRowLabel: { color: '#fff', fontSize: 15, flex: 1, marginRight: 12 },
-  settingsNote: { color: '#ff453a', fontSize: 12, marginTop: 8 },
-  autoDeleteBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#555', alignItems: 'center' },
-  autoDeleteBtnActive: { borderColor: '#4CD964', backgroundColor: 'rgba(76,217,100,0.15)' },
-  autoDeleteBtnText: { color: '#aaa', fontSize: 14 },
-  autoDeleteBtnTextActive: { color: '#4CD964', fontWeight: 'bold' },
+  settingsRowLabel: { color: '#f0d6ff', fontSize: 15, flex: 1, marginRight: 12 },
+  settingsNote: { color: '#ff6b8a', fontSize: 12, marginTop: 8 },
+  autoDeleteBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#4a3060', alignItems: 'center' },
+  autoDeleteBtnActive: { borderColor: '#c084fc', backgroundColor: 'rgba(192,132,252,0.15)' },
+  autoDeleteBtnText: { color: '#9b72cf', fontSize: 14 },
+  autoDeleteBtnTextActive: { color: '#c084fc', fontWeight: 'bold' },
   galleryModal: { flex: 1, backgroundColor: '#000' },
   galleryHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
