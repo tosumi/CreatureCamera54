@@ -449,73 +449,82 @@ const ALL_THEME_IDS = ['default', 'flower', 'stylish', 'ocean', 'forest', 'savan
 const INITIAL_FRAME_COUNTS = Object.fromEntries(ALL_THEME_IDS.map(id => [id, 0]));
 
 // テーマ別の生き物セット
+// 各テーマ8体: basic 6体 + time 1体（時間限定）+ seasonal 1体（季節限定）
+// time.hours  : 出現可能な時刻の配列（24時間制）
+// seasonal.months: 出現可能な月の配列（1〜12）
 const CREATURE_SETS = {
-  default: [
-    { id: 'octopus', emoji: '🐙',  size: 80 },
-    { id: 'alien',   emoji: '👽',  size: 70 },
-    { id: 'spider',  emoji: '🕷️', size: 60 },
-    { id: 'ghost',   emoji: '👻',  size: 75 },
-    { id: 'eye',     emoji: '👁️', size: 65 },
-    { id: 'bug',     emoji: '🐛',  size: 55 },
-    // 追加（6→8）
-    { id: 'microbe', emoji: '🦠',  size: 55 },
-    { id: 'zombie',  emoji: '🧟',  size: 75 },
-  ],
-  flower: [
-    { id: 'rose',      emoji: '🌹', size: 70 },
-    { id: 'tulip',     emoji: '🌷', size: 65 },
-    { id: 'cherry',    emoji: '🌸', size: 75 },
-    { id: 'sunflower', emoji: '🌻', size: 80 },
-    { id: 'bouquet',   emoji: '💐', size: 85 },
-    // 追加（5→8）
-    { id: 'hibiscus',  emoji: '🌺', size: 70 },
-    { id: 'blossom',   emoji: '🌼', size: 65 },
-    { id: 'lotus',     emoji: '🪷', size: 75 },
-  ],
-  stylish: [
-    { id: 'diamond',  emoji: '💎', size: 65 },
-    { id: 'sparkle',  emoji: '✨', size: 70 },
-    { id: 'ring',     emoji: '💍', size: 60 },
-    { id: 'sheart',   emoji: '💖', size: 75 },
-    { id: 'ribbon',   emoji: '🎀', size: 65 },
-    // 追加（5→8）
-    { id: 'crown',    emoji: '👑', size: 70 },
-    { id: 'fan',      emoji: '🪭', size: 65 },
-    { id: 'lipstick', emoji: '💄', size: 55 },
-  ],
-  ocean: [
-    { id: 'jellyfish', emoji: '🪼', size: 70 },
-    { id: 'fish',      emoji: '🐟', size: 60 },
-    { id: 'whale',     emoji: '🐳', size: 90 },
-    { id: 'octopus2',  emoji: '🐙', size: 80 },
-    { id: 'dolphin',   emoji: '🐬', size: 85 },
-    // 追加（5→8）
-    { id: 'shell',     emoji: '🐚', size: 65 },
-    { id: 'crab',      emoji: '🦀', size: 65 },
-    { id: 'shark',     emoji: '🦈', size: 85 },
-  ],
-  forest: [
-    { id: 'squirrel', emoji: '🐿️', size: 60 },
-    { id: 'monkey',   emoji: '🐒',  size: 70 },
-    { id: 'bear',     emoji: '🐻',  size: 85 },
-    { id: 'raccoon',  emoji: '🦝',  size: 70 },
-    { id: 'owl',      emoji: '🦉',  size: 65 },
-    // 追加（5→8）
-    { id: 'fox',      emoji: '🦊',  size: 65 },
-    { id: 'deer',     emoji: '🦌',  size: 80 },
-    { id: 'rabbit',   emoji: '🐇',  size: 60 },
-  ],
-  savanna: [
-    { id: 'lion',     emoji: '🦁', size: 85 },
-    { id: 'giraffe',  emoji: '🦒', size: 90 },
-    { id: 'elephant', emoji: '🐘', size: 95 },
-    { id: 'zebra',    emoji: '🦓', size: 80 },
-    { id: 'flamingo', emoji: '🦩', size: 75 },
-    // 追加（5→8）
-    { id: 'rhino',    emoji: '🦏', size: 90 },
-    { id: 'leopard',  emoji: '🐆', size: 80 },
-    { id: 'hippo',    emoji: '🦛', size: 95 },
-  ],
+  default: {
+    basic: [
+      { id: 'octopus', emoji: '🐙',  size: 80 },
+      { id: 'alien',   emoji: '👽',  size: 70 },
+      { id: 'spider',  emoji: '🕷️', size: 60 },
+      { id: 'ghost',   emoji: '👻',  size: 75 },
+      { id: 'eye',     emoji: '👁️', size: 65 },
+      { id: 'bug',     emoji: '🐛',  size: 55 },
+    ],
+    time:     { id: 'zombie',  emoji: '🧟', size: 75, hours:  [21,22,23,0,1,2,3,4] }, // 深夜のゾンビ
+    seasonal: { id: 'microbe', emoji: '🦠', size: 55, months: [12,1,2] },              // 冬（風邪の季節）
+  },
+  flower: {
+    basic: [
+      { id: 'rose',      emoji: '🌹', size: 70 },
+      { id: 'cherry',    emoji: '🌸', size: 75 },
+      { id: 'sunflower', emoji: '🌻', size: 80 },
+      { id: 'bouquet',   emoji: '💐', size: 85 },
+      { id: 'hibiscus',  emoji: '🌺', size: 70 },
+      { id: 'blossom',   emoji: '🌼', size: 65 },
+    ],
+    time:     { id: 'lotus', emoji: '🪷', size: 75, hours:  [17,18,19] },    // 夕暮れの蓮
+    seasonal: { id: 'tulip', emoji: '🌷', size: 65, months: [3,4,5] },       // 春（チューリップの季節）
+  },
+  stylish: {
+    basic: [
+      { id: 'diamond',  emoji: '💎', size: 65 },
+      { id: 'sparkle',  emoji: '✨', size: 70 },
+      { id: 'ring',     emoji: '💍', size: 60 },
+      { id: 'sheart',   emoji: '💖', size: 75 },
+      { id: 'ribbon',   emoji: '🎀', size: 65 },
+      { id: 'fan',      emoji: '🪭', size: 65 },
+    ],
+    time:     { id: 'lipstick', emoji: '💄', size: 55, hours:  [20,21,22,23] }, // 夜のお出かけ
+    seasonal: { id: 'crown',    emoji: '👑', size: 70, months: [12,1] },         // 年末年始
+  },
+  ocean: {
+    basic: [
+      { id: 'jellyfish', emoji: '🪼', size: 70 },
+      { id: 'fish',      emoji: '🐟', size: 60 },
+      { id: 'whale',     emoji: '🐳', size: 90 },
+      { id: 'octopus2',  emoji: '🐙', size: 80 },
+      { id: 'dolphin',   emoji: '🐬', size: 85 },
+      { id: 'shell',     emoji: '🐚', size: 65 },
+    ],
+    time:     { id: 'shark', emoji: '🦈', size: 85, hours:  [21,22,23,0,1,2,3,4] }, // 深夜のサメ
+    seasonal: { id: 'crab',  emoji: '🦀', size: 65, months: [7,8] },                 // 夏（海水浴シーズン）
+  },
+  forest: {
+    basic: [
+      { id: 'squirrel', emoji: '🐿️', size: 60 },
+      { id: 'monkey',   emoji: '🐒',  size: 70 },
+      { id: 'bear',     emoji: '🐻',  size: 85 },
+      { id: 'raccoon',  emoji: '🦝',  size: 70 },
+      { id: 'owl',      emoji: '🦉',  size: 65 },
+      { id: 'fox',      emoji: '🦊',  size: 65 },
+    ],
+    time:     { id: 'rabbit', emoji: '🐇', size: 60, hours:  [5,6,7,8] },       // 早朝のウサギ
+    seasonal: { id: 'deer',   emoji: '🦌', size: 80, months: [9,10,11] },        // 秋（紅葉の季節）
+  },
+  savanna: {
+    basic: [
+      { id: 'lion',     emoji: '🦁', size: 85 },
+      { id: 'elephant', emoji: '🐘', size: 95 },
+      { id: 'zebra',    emoji: '🦓', size: 80 },
+      { id: 'flamingo', emoji: '🦩', size: 75 },
+      { id: 'rhino',    emoji: '🦏', size: 90 },
+      { id: 'leopard',  emoji: '🐆', size: 80 },
+    ],
+    time:     { id: 'hippo',   emoji: '🦛', size: 95, hours:  [21,22,23,0,1,2,3,4] }, // 深夜のカバ
+    seasonal: { id: 'giraffe', emoji: '🦒', size: 90, months: [6,7,8] },               // 夏（サバンナの乾季）
+  },
 };
 
 const SIZE_VARIANTS = [
@@ -525,8 +534,16 @@ const SIZE_VARIANTS = [
 ];
 
 function pickCreature(theme) {
-  const set     = CREATURE_SETS[theme] ?? CREATURE_SETS.default;
-  const base    = set[Math.floor(Math.random() * set.length)];
+  const set   = CREATURE_SETS[theme] ?? CREATURE_SETS.default;
+  const now   = new Date();
+  const hour  = now.getHours();
+  const month = now.getMonth() + 1; // 1〜12
+
+  const pool = [...set.basic];
+  if (set.time     && set.time.hours.includes(hour))       pool.push(set.time);
+  if (set.seasonal && set.seasonal.months.includes(month)) pool.push(set.seasonal);
+
+  const base    = pool[Math.floor(Math.random() * pool.length)];
   const variant = SIZE_VARIANTS[Math.floor(Math.random() * SIZE_VARIANTS.length)];
   return { ...base, size: base.size * variant.scale, scale: variant.scale };
 }
