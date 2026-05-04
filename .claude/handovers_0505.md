@@ -4,10 +4,10 @@
 
 - **場所**: `C:\Users\tosum\Projects\CreatureCamera54\`
 - **内容**: Expo SDK 54 / React Native 0.81.5 / React 19.1.0 のシングルファイルアプリ
-- **メインファイル**: `App.js`（約 3800 行）
+- **メインファイル**: `App.js`（約 3660 行）
 - **動作環境**: Expo Go App Store 版 54.0.2（SDK 55+ は使用不可）
 - **起動コマンド**: `npx expo start`
-- **現在のバージョン**: `1.1.4`（app.json）/ build number 13
+- **現在のバージョン**: `1.1.6`（app.json）/ build number 15
 
 ---
 
