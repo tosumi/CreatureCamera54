@@ -354,6 +354,7 @@ const SETTINGS_KEY      = 'creature_camera_settings';
 const SAVED_PHOTOS_KEY  = '@creature_camera_saved_photos';
 const AUTO_DELETE_KEY   = '@creature_camera_auto_delete';
 const AUDIO_SETTINGS_KEY = '@creature_camera_audio';
+const PHOTO_THEMES_KEY  = '@creature_camera_photo_themes'; // 写真ごとのテーマID記録
 const PHOTO_LIMIT = 30;
 const OVERFLOW_LIMIT = 80; // 超過モード時の表示上限
 const PROTECT_LIMIT = 20;  // 保護できる写真の上限枚数
@@ -700,7 +701,7 @@ function getEdgeSetup(edge, size, vp) {
 
 const FULL_VP = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, fullScreen: true };
 
-function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onCapturable, onUncapturable, vp, isSpecial, itemLabel, pauseAfterCapturable }) {
+function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onCapturable, onUncapturable, vp, isSpecial, itemLabel, pauseAfterCapturable, opacityRef, pauseFnRef, resumeFnRef }) {
   const viewport      = vp ?? FULL_VP;
   const { x: VX, y: VY, w: VW, h: VH } = viewport;
   const isFade        = mode === 'fadein';
@@ -732,6 +733,16 @@ function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onC
     posRef.current = { top: initTop, left: initLeft };
     const tl = topAnim.addListener(({ value })  => { posRef.current.top  = value; });
     const ll = leftAnim.addListener(({ value }) => { posRef.current.left = value; });
+    const ol = opacityAnim.addListener(({ value }) => { if (opacityRef) opacityRef.current = value; });
+    // リスナーは変化時のみ発火するため、初期値を即時セット
+    if (opacityRef) opacityRef.current = (isFade || isFloatUp || isSpinIn) ? 0 : 1;
+    if (pauseFnRef) pauseFnRef.current = () => {
+      topAnim.stopAnimation();
+      leftAnim.stopAnimation();
+      opacityAnim.stopAnimation();
+      scaleAnim.stopAnimation();
+      rotateAnim.stopAnimation();
+    };
     // 生き物の最終停止座標をスコープへ通知（特殊モードは入場アニメーション内で呼ぶ）
     if (!isSpecialMode) {
       const finalTop  = isFade ? initTop  : (enterTo?.top  !== undefined ? enterTo.top  : initTop);
@@ -739,28 +750,59 @@ function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onC
       onFinalPos?.({ top: finalTop, left: finalLeft });
     }
     let alive = true;
+    let currentPhase = 'entering'; // 'entering' | 'capturable' | 'exiting'
 
-    const middle = Animated.sequence([
-      Animated.delay(1500),
+    // フェードアウト退場
+    const runExit = () => {
+      if (isFade || isSpecialMode) {
+        Animated.timing(opacityAnim, { toValue: 0, duration: 400, useNativeDriver: false })
+          .start(({ finished }) => { if (finished && alive) onDone(); });
+      } else {
+        const exitAnim = (edge === 'top' || edge === 'bottom')
+          ? Animated.timing(topAnim,  { toValue: initTop,  duration: 400, useNativeDriver: false })
+          : Animated.timing(leftAnim, { toValue: initLeft, duration: 400, useNativeDriver: false });
+        exitAnim.start(({ finished }) => { if (finished && alive) onDone(); });
+      }
+    };
+
+    // ぷにぷに middle アニメーション + 退場（毎回新規生成）
+    const makeMidAndExit = () => {
       Animated.sequence([
-        Animated.timing(scaleAnim, { toValue: 1.3, duration: 200, useNativeDriver: false }),
-        Animated.timing(scaleAnim, { toValue: 1.0, duration: 200, useNativeDriver: false }),
-      ]),
-      Animated.delay(800),
-    ]);
+        Animated.delay(1500),
+        Animated.sequence([
+          Animated.timing(scaleAnim, { toValue: 1.3, duration: 200, useNativeDriver: false }),
+          Animated.timing(scaleAnim, { toValue: 1.0, duration: 200, useNativeDriver: false }),
+        ]),
+        Animated.delay(800),
+      ]).start(({ finished }) => {
+        if (!finished || !alive) return;
+        uncapturable();
+        runExit();
+      });
+    };
+
+    const capturable   = () => { currentPhase = 'capturable'; onCapturable?.(); };
+    const uncapturable = () => { currentPhase = 'exiting';    onUncapturable?.(); };
+
+    // ポーズ後の再開用（entering フェーズ時）- 各ブランチで設定
+    let resumeEntry = null;
 
     if (isFade) {
+      resumeEntry = () => {
+        Animated.timing(opacityAnim, { toValue: 1, duration: 400, useNativeDriver: false })
+          .start(({ finished }) => {
+            if (!finished || !alive) return;
+            capturable();
+            if (pauseAfterCapturable) return;
+            makeMidAndExit();
+          });
+      };
       Animated.timing(opacityAnim, { toValue: 1, duration: 600, useNativeDriver: false })
         .start(({ finished }) => {
           if (!finished || !alive) return;
-          onCapturable?.();
+          capturable();
           if (pauseAfterCapturable) return; // チュートリアル：capturable状態のまま停止
-          middle.start(({ finished }) => {
-            if (!finished || !alive) return;
-            onUncapturable?.();
-            Animated.timing(opacityAnim, { toValue: 0, duration: 400, useNativeDriver: false })
-              .start(({ finished }) => { if (finished && alive) onDone(); });
-          });
+          makeMidAndExit();
         });
     } else if (isBounce) {
       // 横から入りながら大小の放物線バウンド → フェードアウト退場
@@ -771,6 +813,18 @@ function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onC
       const peakY1     = groundY - safeH * 0.55;                 // 大きな弧の頂点
       const peakY2     = groundY - safeH * 0.25;                 // 小さな弧の頂点
       onFinalPos?.({ top: groundY, left: targetLeft });
+      resumeEntry = () => {
+        // ポーズ後は現在位置から最終着地点へ直線移動
+        Animated.parallel([
+          Animated.timing(leftAnim, { toValue: targetLeft, duration: 400, useNativeDriver: false }),
+          Animated.timing(topAnim,  { toValue: groundY,    duration: 400, useNativeDriver: false }),
+        ]).start(({ finished }) => {
+          if (!finished || !alive) return;
+          capturable();
+          if (pauseAfterCapturable) return;
+          makeMidAndExit();
+        });
+      };
       Animated.parallel([
         // 横: 画面横外から中央へスムーズに移動（合計1000ms）
         Animated.timing(leftAnim, { toValue: targetLeft, duration: 1000, useNativeDriver: false }),
@@ -783,68 +837,90 @@ function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onC
         ]),
       ]).start(({ finished }) => {
         if (!finished || !alive) return;
-        onCapturable?.();
+        capturable();
         if (pauseAfterCapturable) return;
-        middle.start(({ finished }) => {
-          if (!finished || !alive) return;
-          onUncapturable?.();
-          Animated.timing(opacityAnim, { toValue: 0, duration: 400, useNativeDriver: false })
-            .start(({ finished }) => { if (finished && alive) onDone(); });
-        });
+        makeMidAndExit();
       });
     } else if (isFloatUp) {
       // 下から浮き上がり＋フェードイン → フェードアウト退場
       const targetTop = sf.top + Math.random() * Math.max(0, sf.bottom - sf.top - creature.size);
       onFinalPos?.({ top: targetTop, left: initLeft });
+      resumeEntry = () => {
+        Animated.parallel([
+          Animated.timing(topAnim,     { toValue: targetTop, duration: 400, useNativeDriver: false }),
+          Animated.timing(opacityAnim, { toValue: 1,         duration: 400, useNativeDriver: false }),
+        ]).start(({ finished }) => {
+          if (!finished || !alive) return;
+          capturable();
+          if (pauseAfterCapturable) return;
+          makeMidAndExit();
+        });
+      };
       Animated.parallel([
         Animated.timing(topAnim,     { toValue: targetTop, duration: 800, useNativeDriver: false }),
         Animated.timing(opacityAnim, { toValue: 1,         duration: 800, useNativeDriver: false }),
       ]).start(({ finished }) => {
         if (!finished || !alive) return;
-        onCapturable?.();
+        capturable();
         if (pauseAfterCapturable) return;
-        middle.start(({ finished }) => {
-          if (!finished || !alive) return;
-          onUncapturable?.();
-          Animated.timing(opacityAnim, { toValue: 0, duration: 400, useNativeDriver: false })
-            .start(({ finished }) => { if (finished && alive) onDone(); });
-        });
+        makeMidAndExit();
       });
     } else if (isSpinIn) {
       // 回転しながらフェードイン → フェードアウト退場
       onFinalPos?.({ top: initTop, left: initLeft });
+      resumeEntry = () => {
+        Animated.parallel([
+          Animated.timing(opacityAnim, { toValue: 1, duration: 400, useNativeDriver: false }),
+          Animated.timing(rotateAnim,  { toValue: 1, duration: 400, useNativeDriver: false }),
+        ]).start(({ finished }) => {
+          if (!finished || !alive) return;
+          capturable();
+          if (pauseAfterCapturable) return;
+          makeMidAndExit();
+        });
+      };
       Animated.parallel([
         Animated.timing(opacityAnim, { toValue: 1, duration: 700, useNativeDriver: false }),
         Animated.timing(rotateAnim,  { toValue: 1, duration: 700, useNativeDriver: false }),
       ]).start(({ finished }) => {
         if (!finished || !alive) return;
-        onCapturable?.();
+        capturable();
         if (pauseAfterCapturable) return;
-        middle.start(({ finished }) => {
-          if (!finished || !alive) return;
-          onUncapturable?.();
-          Animated.timing(opacityAnim, { toValue: 0, duration: 400, useNativeDriver: false })
-            .start(({ finished }) => { if (finished && alive) onDone(); });
-        });
+        makeMidAndExit();
       });
     } else {
+      resumeEntry = () => {
+        const anims = [];
+        if (enterTo.top  !== undefined) anims.push(Animated.timing(topAnim,  { toValue: enterTo.top,  duration: 400, useNativeDriver: false }));
+        if (enterTo.left !== undefined) anims.push(Animated.timing(leftAnim, { toValue: enterTo.left, duration: 400, useNativeDriver: false }));
+        Animated.parallel(anims).start(({ finished }) => {
+          if (!finished || !alive) return;
+          capturable();
+          if (pauseAfterCapturable) return;
+          makeMidAndExit();
+        });
+      };
       const enterAnims = [];
       if (enterTo.top  !== undefined) enterAnims.push(Animated.timing(topAnim,  { toValue: enterTo.top,  duration: 600, useNativeDriver: false }));
       if (enterTo.left !== undefined) enterAnims.push(Animated.timing(leftAnim, { toValue: enterTo.left, duration: 600, useNativeDriver: false }));
       Animated.parallel(enterAnims).start(({ finished }) => {
         if (!finished || !alive) return;
-        onCapturable?.();
+        capturable();
         if (pauseAfterCapturable) return; // チュートリアル：capturable状態のまま停止
-        middle.start(({ finished }) => {
-          if (!finished || !alive) return;
-          onUncapturable?.();
-          const exitAnim = edge === 'top' || edge === 'bottom'
-            ? Animated.timing(topAnim,  { toValue: initTop,  duration: 400, useNativeDriver: false })
-            : Animated.timing(leftAnim, { toValue: initLeft, duration: 400, useNativeDriver: false });
-          exitAnim.start(({ finished }) => { if (finished && alive) onDone(); });
-        });
+        makeMidAndExit();
       });
     }
+
+    // ポーズ解除時の再開（フェーズに応じてアニメーションを継続）
+    if (resumeFnRef) resumeFnRef.current = () => {
+      if (currentPhase === 'capturable') {
+        makeMidAndExit();
+      } else if (currentPhase === 'exiting') {
+        runExit();
+      } else {
+        resumeEntry?.();
+      }
+    };
 
     return () => {
       alive = false;
@@ -855,6 +931,9 @@ function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onC
       rotateAnim.stopAnimation();
       topAnim.removeListener(tl);
       leftAnim.removeListener(ll);
+      opacityAnim.removeListener(ol);
+      if (pauseFnRef)  pauseFnRef.current  = null;
+      if (resumeFnRef) resumeFnRef.current = null;
     };
   }, []);
 
@@ -975,7 +1054,12 @@ export default function App() {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const cameraRef      = useRef(null);
   const compositeRef   = useRef(null);
-  const creaturePosRef = useRef({ top: 0, left: 0 });
+  const creaturePosRef     = useRef({ top: 0, left: 0 });
+  const creatureOpacityRef = useRef(1);
+  const creaturePauseFnRef  = useRef(null); // アラート表示中のアニメーション停止関数
+  const creatureResumeFnRef = useRef(null); // アラート閉鎖後の退場アニメーション再開関数
+  const alertActiveRef      = useRef(false); // アラート表示中フラグ（生き物出現をブロック）
+  const pendingItemSpawnRef = useRef(null);  // アラート中に発火したアイテムタイマーの保留関数
 
   const [activeCreature, setActiveCreature] = useState(null);
   const [compositing, setCompositing]       = useState(null);
@@ -1039,6 +1123,8 @@ export default function App() {
   const [viewerVisible, setViewerVisible]     = useState(false);
   // 超過モード：起動時に上限超過を検知した場合にtrue
   const [overflowMode, setOverflowMode]       = useState(false);
+  // ギャラリーソートモード: 'newest' | 'oldest' | 'favorite' | 'theme'
+  const [gallerySortMode, setGallerySortMode] = useState('newest');
   // 特殊アイテム状態
   const [harmonyActive, setHarmonyActive]     = useState(false); // 和気あいあい発動中
   const [scopeActive, setScopeActive]         = useState(false); // スコープ発動中
@@ -1095,6 +1181,12 @@ export default function App() {
   const savedPhotoIdsRef    = useRef({});
   const overflowModeRef     = useRef(false);
   const saveModeRef         = useRef(null);
+  const gallerySortModeRef  = useRef('newest');
+  const photoThemeMapRef    = useRef({}); // {[assetId]: themeId}
+  const pendingResortRef    = useRef(false); // ビューワー保護操作後の再ソート待ちフラグ
+  const photoBaseOrderRef   = useRef({}); // {[assetId]: index} MediaLibrary取得時の新しい順インデックス
+  const galleryVisibleRef  = useRef(false); // showAlert resume() でオーバーレイ開放中チェックに使用
+  const settingsVisibleRef = useRef(false);
 
   // 起動時にAudioモードを設定
   // playsInSilentModeIOS: false → サイレントモード時はBGM/SE再生しない
@@ -1104,7 +1196,7 @@ export default function App() {
       playsInSilentModeIOS: false,
       interruptionModeIOS: InterruptionModeIOS.MixWithOthers,
       staysActiveInBackground: false,
-      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+      interruptionModeAndroid: InterruptionModeAndroid.MixWithOthers, // BGMとSEを同時再生（DoNotMixだとSEがBGMを停止させ冒頭ループが発生）
       shouldDuckAndroid: false,
     }).catch(() => {});
   }, []);
@@ -1239,7 +1331,7 @@ export default function App() {
     }
 
     // 設定なし・アルバムなし → 同意を求める
-    Alert.alert(
+    showAlert(
       t('alert_album_create_title'),
       t('alert_album_create_body'),
       [
@@ -1287,26 +1379,35 @@ export default function App() {
     }
   }
 
-  // 写真の保存（saveModeに応じて切り替え）
-  async function savePicture(uri) {
+  // 写真の保存（saveModeに応じて切り替え）＋テーマ記録
+  async function savePicture(uri, themeId) {
+    // createAssetAsync で asset.id を取得（defaultモードでも同様に動作）
+    const asset = await MediaLibrary.createAssetAsync(uri);
     if (saveMode === 'album') {
-      const asset = await MediaLibrary.createAssetAsync(uri);
       const album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
       if (album) {
         await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
       } else {
         await MediaLibrary.createAlbumAsync(ALBUM_NAME, asset, false);
       }
-    } else {
-      await MediaLibrary.saveToLibraryAsync(uri);
     }
+    // テーマIDを記録
+    try {
+      const existing = JSON.parse(await AsyncStorage.getItem(PHOTO_THEMES_KEY) ?? '{}');
+      existing[asset.id] = themeId;
+      photoThemeMapRef.current = existing;
+      await AsyncStorage.setItem(PHOTO_THEMES_KEY, JSON.stringify(existing));
+    } catch {}
   }
 
   const scheduleNextCreature = useCallback(() => {
-    if (tutorialStepRef.current > 0) return; // チュートリアル中は自動出現しない
+    if (tutorialStepRef.current > 0) return;  // チュートリアル中は自動出現しない
+    if (alertActiveRef.current) return;        // アラート表示中は出現させない
+    clearTimeout(timerRef.current);            // 二重スケジュール防止
     const delay = 2000 + Math.random() * 6000;
     timerRef.current = setTimeout(() => {
       if (tutorialStepRef.current > 0) return; // タイマー発火時にも再確認
+      if (alertActiveRef.current) return;       // タイマー発火時にもアラートチェック
       const vp = fullScreen
         ? { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, fullScreen: true }
         : { x: 10, y: 20, w: SCREEN_W - 20, h: CAMERA_AREA_H - 20, clampBottom: true, fullScreen: false };
@@ -1317,7 +1418,13 @@ export default function App() {
         // 予兆SE再生後1秒待ってから出現アニメーション開始
         const item = pickSpecialItem(scopeActiveRef.current ? ['scope'] : []);
         timerRef.current = setTimeout(() => {
-          setActiveCreature({ creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, key: Date.now(), vp, isSpecial: true, itemType: item.type, itemLabel: t('item_' + item.type) });
+          const spawnData = { creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, vp, isSpecial: true, itemType: item.type, itemLabel: t('item_' + item.type) };
+          if (alertActiveRef.current) {
+            // アラート表示中は保留 → アラート解除後に出現
+            pendingItemSpawnRef.current = () => setActiveCreature({ ...spawnData, key: Date.now() });
+          } else {
+            setActiveCreature({ ...spawnData, key: Date.now() });
+          }
         }, 1000);
         return;
       }
@@ -1330,7 +1437,13 @@ export default function App() {
         // 予兆SE再生後1秒待ってから出現アニメーション開始
         const item = pickSpecialItem(scopeActiveRef.current ? ['scope'] : []);
         timerRef.current = setTimeout(() => {
-          setActiveCreature({ creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, key: Date.now(), vp, isSpecial: true, itemType: item.type, itemLabel: t('item_' + item.type) });
+          const spawnData = { creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, vp, isSpecial: true, itemType: item.type, itemLabel: t('item_' + item.type) };
+          if (alertActiveRef.current) {
+            // アラート表示中は保留 → アラート解除後に出現
+            pendingItemSpawnRef.current = () => setActiveCreature({ ...spawnData, key: Date.now() });
+          } else {
+            setActiveCreature({ ...spawnData, key: Date.now() });
+          }
         }, 1000);
         return;
       }
@@ -1363,19 +1476,24 @@ export default function App() {
     return () => clearTimeout(timerRef.current);
   }, [scheduleNextCreature]);
 
-  // 設定・ギャラリーが開いたらアニメーション停止、閉じたら再スケジュール
+  // 設定・ギャラリーが開いたらアニメーション一時停止、閉じたら再開
   const wasOverlayOpenRef = useRef(false);
   useEffect(() => {
     const isOpen = settingsVisible || galleryVisible;
     if (isOpen) {
-      clearTimeout(timerRef.current);
-      setActiveCreature(null);
-      capturableRef.current = false;
-      setCreatureCapturable(false);
+      alertActiveRef.current = true;        // スポーンブロック
+      clearTimeout(timerRef.current);       // スポーンタイマー停止
+      pendingItemSpawnRef.current = null;   // 保留アイテムをクリア（オーバーレイ遷移で破棄）
+      creaturePauseFnRef.current?.();       // 現在のアニメーション停止
       wasOverlayOpenRef.current = true;
     } else if (wasOverlayOpenRef.current) {
       wasOverlayOpenRef.current = false;
-      if (tutorialStepRef.current === 0) scheduleNextCreatureRef.current?.();
+      alertActiveRef.current = false;       // ブロック解除
+      if (creatureResumeFnRef.current) {
+        creatureResumeFnRef.current();      // アニメーション継続（フェーズ対応）
+      } else if (tutorialStepRef.current === 0) {
+        scheduleNextCreatureRef.current?.();
+      }
     }
   }, [settingsVisible, galleryVisible]);
 
@@ -1383,7 +1501,7 @@ export default function App() {
   useEffect(() => {
     if (overflowMode && saveMode !== null) {
       if (skipOverflowAlertRef.current) { skipOverflowAlertRef.current = false; return; }
-      Alert.alert(
+      showAlert(
         t('alert_overflow_title'),
         t('alert_overflow_body', { limit: PHOTO_LIMIT }),
         [{ text: t('btn_ok'), onPress: () => openGallery() }]
@@ -1397,6 +1515,34 @@ export default function App() {
     setActiveCreature(null);
     if (tutorialStepRef.current === 0) scheduleNextCreature(); // チュートリアル中は自動スケジュールしない
   }, [scheduleNextCreature]);
+
+  // アラート表示ラッパー: 表示前にタイマー停止＋アニメーション停止、閉じたら生き物消去＋再スケジュール
+  const showAlert = useCallback((title, body, buttons) => {
+    alertActiveRef.current = true;    // 生き物出現をブロック（タイマーは止めない）
+    creaturePauseFnRef.current?.();   // 現在のアニメーション停止
+    const resume = () => {
+      // ギャラリー・設定が開いたままの場合はブロックを維持し、生き物スポーンをしない
+      if (galleryVisibleRef.current || settingsVisibleRef.current) {
+        alertActiveRef.current = true;
+        return;
+      }
+      alertActiveRef.current = false; // ブロック解除
+      if (pendingItemSpawnRef.current) {
+        // アラート中に発火したアイテムタイマー → 保留していたアイテムを今出現
+        const spawnFn = pendingItemSpawnRef.current;
+        pendingItemSpawnRef.current = null;
+        spawnFn();
+      } else if (creatureResumeFnRef.current) {
+        creatureResumeFnRef.current(); // アニメーション継続 → 自然に onDone → 次スケジュール
+      } else {
+        handleCreatureDone();          // 生き物なし：次をスケジュール
+      }
+    };
+    const btns = buttons
+      ? buttons.map(btn => ({ ...btn, onPress: () => { btn.onPress?.(); resume(); } }))
+      : [{ text: t('btn_ok'), onPress: resume }];
+    Alert.alert(title, body, btns);
+  }, [handleCreatureDone, t]);
 
   // チュートリアル完了
   const completeTutorial = useCallback(async () => {
@@ -1501,14 +1647,33 @@ export default function App() {
   const takePicture = async () => {
     if (isTakingPictureRef.current || !cameraRef.current || compositing || saveMode === null) return;
 
-    const isSpecialCapture = !!(activeCreature?.isSpecial && capturableRef.current);
+    const isSpecialCapture = !!activeCreature?.isSpecial;
     const hasHarmony = harmonyActiveRef.current && !isSpecialCapture;
 
-    // 和気あいあい発動中は生き物なしでも撮影可能。それ以外は撮影可能状態が必要。
-    if (!capturableRef.current && !hasHarmony) {
+    // 生き物が一切いない → 撮影不可（和気あいあい有効でも通常シーケンスが必要）
+    if (!activeCreature) {
       playSE(SE_NO_CREATURE);
-      Alert.alert(t('alert_no_creature_title'), t('alert_no_creature_body'));
+      showAlert(t('alert_no_creature_title'), t('alert_no_creature_body'));
       return;
+    }
+
+    // 生き物の矩形が20%以上画面内かつ不透明度が20%以上のときのみ撮影成功
+    // アニメーション中も含めて判定（特殊アイテムはスキップ）
+    if (activeCreature && !isSpecialCapture) {
+      const { top, left } = creaturePosRef.current;
+      const size = activeCreature.creature.size;
+      const vp   = activeCreature.vp ?? { x: 0, y: 0, w: SCREEN_W, h: CAMERA_AREA_H };
+      const visTop    = Math.max(top,        vp.y);
+      const visBottom = Math.min(top + size, vp.y + vp.h);
+      const visLeft   = Math.max(left,       vp.x);
+      const visRight  = Math.min(left + size, vp.x + vp.w);
+      const visArea   = Math.max(0, visRight - visLeft) * Math.max(0, visBottom - visTop);
+      const areaRatio = size > 0 ? visArea / (size * size) : 0;
+      if (areaRatio < 0.2 || creatureOpacityRef.current < 0.2) {
+        playSE(SE_NO_CREATURE);
+        showAlert(t('alert_no_creature_title'), t('alert_no_creature_body'));
+        return;
+      }
     }
 
     // チュートリアル step3/12 中はシャッター押下時点でバブルを即時非表示（誤スキップ防止）
@@ -1550,11 +1715,11 @@ export default function App() {
           // チュートリアル step12 の場合は OK 後に step14 へ進む
           if (tutorialStepRef.current === 12) {
             if (tutorialAutoShootRef.current) { clearTimeout(tutorialAutoShootRef.current); tutorialAutoShootRef.current = null; }
-            Alert.alert(t('alert_theme_new_title'), t('alert_theme_new_body', { label }), [{
+            showAlert(t('alert_theme_new_title'), t('alert_theme_new_body', { label }), [{
               text: t('btn_ok'), onPress: () => { setTutorialCapturing(false); tutorialStepRef.current = 14; setTutorialStep(14); }
             }]);
           } else {
-            Alert.alert(t('alert_theme_new_title'), t('alert_theme_new_body', { label }));
+            showAlert(t('alert_theme_new_title'), t('alert_theme_new_body', { label }));
           }
         } else {
           // 全テーマ取得済み → ランダムなテーマにフレーム+5を付与
@@ -1568,11 +1733,11 @@ export default function App() {
           playSE(SE_ITEM_FRAME);
           if (tutorialStepRef.current === 12) {
             if (tutorialAutoShootRef.current) { clearTimeout(tutorialAutoShootRef.current); tutorialAutoShootRef.current = null; }
-            Alert.alert(t('alert_theme_all_title'), t('alert_theme_all_body', { label }), [{
+            showAlert(t('alert_theme_all_title'), t('alert_theme_all_body', { label }), [{
               text: t('btn_ok'), onPress: () => { setTutorialCapturing(false); tutorialStepRef.current = 14; setTutorialStep(14); }
             }]);
           } else {
-            Alert.alert(t('alert_theme_all_title'), t('alert_theme_all_body', { label }));
+            showAlert(t('alert_theme_all_title'), t('alert_theme_all_body', { label }));
           }
         }
       } else if (itype === 'frame') {
@@ -1582,25 +1747,25 @@ export default function App() {
         frameCountsRef.current = newCounts;
         persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, newCounts, language);
         playSE(SE_ITEM_FRAME);
-        Alert.alert(t('alert_frame_plus_title'), t('alert_frame_plus_body', { count: newCount }));
+        showAlert(t('alert_frame_plus_title'), t('alert_frame_plus_body', { count: newCount }));
       } else if (itype === 'harmony') {
         setHarmonyActive(true);
         harmonyActiveRef.current = true;
         playSE(SE_ITEM_HARMONY);
-        Alert.alert(t('alert_harmony_title'), t('alert_harmony_body'));
+        showAlert(t('alert_harmony_title'), t('alert_harmony_body'));
       } else if (itype === 'scope') {
         setScopeActive(true);
         scopeActiveRef.current = true;
         scopeCountRef.current = 1;
         playSE(SE_ITEM_SCOPE);
-        Alert.alert(t('alert_scope_title'), t('alert_scope_body'));
+        showAlert(t('alert_scope_title'), t('alert_scope_body'));
       }
       return;
     }
 
     isTakingPictureRef.current = true;
 
-    const creatureSnapshot = (activeCreature && capturableRef.current)
+    const creatureSnapshot = (activeCreature && !isSpecialCapture)
       ? { creature: activeCreature.creature, pos: { ...creaturePosRef.current }, edge: activeCreature.edge }
       : null;
 
@@ -1625,7 +1790,7 @@ export default function App() {
       setCompositing({ photoUri: photo.uri, creatureSnapshot, frameSource, usedFrameTheme: frameSource ? theme : null, harmonyEntries, wasScope, fullScreen });
     } catch (e) {
       isTakingPictureRef.current = false;
-      Alert.alert(t('alert_photo_error_title'), t('alert_photo_error_body'));
+      showAlert(t('alert_photo_error_title'), t('alert_photo_error_body'));
     }
   };
 
@@ -1642,7 +1807,7 @@ export default function App() {
           ]);
         }
         const uri = await captureRef(compositeRef, { format: 'jpg', quality: 0.9 });
-        await savePicture(uri);
+        await savePicture(uri, theme);
 
         // フレームを使った場合は残り回数を -1
         if (compositing.usedFrameTheme) {
@@ -1668,7 +1833,7 @@ export default function App() {
         zoomLevelRef.current = 0;
         setZoomLevel(0);
         setSuccessPhoto(uri);
-        Alert.alert(t('alert_photo_saved_title'), t('alert_photo_saved_body'), [
+        showAlert(t('alert_photo_saved_title'), t('alert_photo_saved_body'), [
           { text: t('btn_ok'), onPress: async () => {
             isTakingPictureRef.current = false;
             setSuccessPhoto(null);
@@ -1744,7 +1909,7 @@ export default function App() {
               setOverflowMode(true);
               overflowModeRef.current = true;
               setTimeout(() => {
-                Alert.alert(
+                showAlert(
                   t('alert_album_full_title'),
                   t('alert_album_full_body1', { limit: PHOTO_LIMIT }),
                   [{ text: t('btn_ok'), onPress: () => openGallery() }]
@@ -1755,63 +1920,100 @@ export default function App() {
         ]);
       } catch (e) {
         isTakingPictureRef.current = false;
-        Alert.alert(t('alert_photo_error_title'), t('alert_save_error_body', { msg: e.message }));
+        showAlert(t('alert_photo_error_title'), t('alert_save_error_body', { msg: e.message }));
         setCompositing(null);
       }
     };
     run();
   }, [compositing]);
 
+  // ギャラリー資産取得＋ソート共通関数
+  // 戻り値: {id, uri}[] | null（albumモードでアルバムが存在しない場合）
+  const fetchGalleryAssets = async (sortMode) => {
+    // テーママップをAsyncStorageから読み込み
+    try {
+      const raw = await AsyncStorage.getItem(PHOTO_THEMES_KEY);
+      if (raw) photoThemeMapRef.current = JSON.parse(raw);
+    } catch {}
+
+    // MediaLibraryのソート方向（favorite/themeはnewest取得後にJSソート）
+    const mlSort = (sortMode === 'oldest')
+      ? [[MediaLibrary.SortBy.creationTime, true]]
+      : [[MediaLibrary.SortBy.creationTime, false]];
+
+    const fetchLimit = overflowModeRef.current ? OVERFLOW_LIMIT : PHOTO_LIMIT;
+    let mlAssets;
+    if (saveMode === 'album') {
+      const album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
+      if (!album) return null;
+      const result = await MediaLibrary.getAssetsAsync({
+        album, sortBy: mlSort, mediaType: MediaLibrary.MediaType.photo, first: fetchLimit,
+      });
+      mlAssets = result.assets;
+    } else {
+      const result = await MediaLibrary.getAssetsAsync({
+        sortBy: mlSort, mediaType: MediaLibrary.MediaType.photo, first: fetchLimit,
+      });
+      mlAssets = result.assets;
+    }
+
+    // ph:// URIはImageで表示できないため localUri（file://）を取得・nullは除外
+    const items = (await Promise.all(
+      mlAssets.map(async (asset) => {
+        try {
+          const info = await MediaLibrary.getAssetInfoAsync(asset);
+          if (!info.localUri) return null;
+          return { id: asset.id, uri: info.localUri };
+        } catch { return null; }
+      })
+    )).filter(Boolean);
+
+    // MediaLibrary取得時点（新しい順）のインデックスを記録（グループ内順序の基準に使用）
+    const baseOrder = {};
+    items.forEach((item, i) => { baseOrder[item.id] = i; });
+    photoBaseOrderRef.current = baseOrder;
+
+    // JSソート（お気に入り優先 / テーマ別）
+    if (sortMode === 'favorite') {
+      items.sort((a, b) => {
+        const af = savedPhotoIdsRef.current[a.id] ? 1 : 0;
+        const bf = savedPhotoIdsRef.current[b.id] ? 1 : 0;
+        if (bf !== af) return bf - af;
+        return (photoBaseOrderRef.current[a.id] ?? 999) - (photoBaseOrderRef.current[b.id] ?? 999);
+      });
+    } else if (sortMode === 'theme') {
+      const ORDER = THEMES.map(th => th.id);
+      items.sort((a, b) => {
+        const ai = ORDER.indexOf(photoThemeMapRef.current[a.id] ?? '');
+        const bi = ORDER.indexOf(photoThemeMapRef.current[b.id] ?? '');
+        return (ai === -1 ? ORDER.length : ai) - (bi === -1 ? ORDER.length : bi);
+      });
+    }
+
+    return items;
+  };
+
   const openGallery = async () => {
     if (saveMode === 'none') {
-      Alert.alert(t('alert_no_perm_title'));
+      showAlert(t('alert_no_perm_title'));
       return;
     }
+    // 非同期読み込み中もアニメーションを即時停止（setGalleryVisible は読み込み完了後のため）
+    alertActiveRef.current = true;
+    clearTimeout(timerRef.current);
+    pendingItemSpawnRef.current = null;
+    creaturePauseFnRef.current?.();
     try {
-      let assets;
-      if (saveMode === 'album') {
-        // CreatureCameraアルバムの写真のみ表示
-        const album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
-        if (!album) {
-          Alert.alert(t('alert_no_photos_title'), t('alert_no_photos_body'));
-          return;
-        }
-        const result = await MediaLibrary.getAssetsAsync({
-          album,
-          sortBy: MediaLibrary.SortBy.creationTime,
-          mediaType: MediaLibrary.MediaType.photo,
-          first: overflowModeRef.current ? OVERFLOW_LIMIT : PHOTO_LIMIT,
-        });
-        assets = result.assets;
-      } else {
-        // defaultモード：カメラロール全体を表示
-        const result = await MediaLibrary.getAssetsAsync({
-          sortBy: MediaLibrary.SortBy.creationTime,
-          mediaType: MediaLibrary.MediaType.photo,
-          first: overflowModeRef.current ? OVERFLOW_LIMIT : PHOTO_LIMIT,
-        });
-        assets = result.assets;
-      }
-
-      // ph:// URIはImageで表示できないため localUri（file://）を取得する
-      // localUriがnullの写真は除外する
-      const assetsWithLocalUri = (await Promise.all(
-        assets.map(async (asset) => {
-          try {
-            const info = await MediaLibrary.getAssetInfoAsync(asset);
-            if (!info.localUri) return null;
-            return { id: asset.id, uri: info.localUri };
-          } catch {
-            return null;
-          }
-        })
-      )).filter(Boolean);
-
-      if (assetsWithLocalUri.length === 0) {
-        Alert.alert(t('alert_no_viewable_title'), t('alert_no_viewable_body'));
+      const items = await fetchGalleryAssets(gallerySortModeRef.current);
+      if (items === null) {
+        showAlert(t('alert_no_photos_title'), t('alert_no_photos_body'));
         return;
       }
-      setGalleryAssets(assetsWithLocalUri);
+      if (items.length === 0) {
+        showAlert(t('alert_no_viewable_title'), t('alert_no_viewable_body'));
+        return;
+      }
+      setGalleryAssets(items);
       gallerySlideY.setValue(SCREEN_H);
       galleryOpacity.setValue(0);
       setGalleryVisible(true);
@@ -1823,7 +2025,7 @@ export default function App() {
         ]).start();
       }, 30);
     } catch (e) {
-      Alert.alert(t('alert_gallery_error_title'), t('alert_gallery_error_body', { msg: e.message }));
+      showAlert(t('alert_gallery_error_title'), t('alert_gallery_error_body', { msg: e.message }));
     }
   };
 
@@ -1831,7 +2033,7 @@ export default function App() {
   const closeGallery = useCallback(() => {
     // 超過モード中（アルバムモードのみ）は、まだ上限超過していれば閉じない
     if (saveModeRef.current === 'album' && overflowModeRef.current && galleryCountRef.current > PHOTO_LIMIT) {
-      Alert.alert(
+      showAlert(
         t('alert_album_full_title'),
         t('alert_album_full_body2', { limit: PHOTO_LIMIT, over: galleryCountRef.current - PHOTO_LIMIT }),
         [{ text: t('btn_ok') }]
@@ -1871,6 +2073,16 @@ export default function App() {
         setViewerVisible(false);
         setSelectedIndex(null);
         setPendingIndex(null);
+        // お気に入りソート中に保護操作があった場合、一覧に戻った時点で再ソート
+        if (pendingResortRef.current) {
+          pendingResortRef.current = false;
+          setGalleryAssets(prev => [...prev].sort((a, b) => {
+            const af = savedPhotoIdsRef.current[a.id] ? 1 : 0;
+            const bf = savedPhotoIdsRef.current[b.id] ? 1 : 0;
+            if (bf !== af) return bf - af;
+            return (photoBaseOrderRef.current[a.id] ?? 999) - (photoBaseOrderRef.current[b.id] ?? 999);
+          }));
+        }
       }, 15);
     });
   }, []);
@@ -1958,6 +2170,8 @@ export default function App() {
   bgmEnabledRef.current           = bgmEnabled;
   seEnabledRef.current            = seEnabled;
   _langRef.current                = language; // レンダー毎に最新の言語を同期
+  galleryVisibleRef.current  = galleryVisible;
+  settingsVisibleRef.current = settingsVisible;
   scheduleNextCreatureRef.current = scheduleNextCreature;
   takePictureRef.current = takePicture;
   playSERef.current      = playSE;
@@ -2062,10 +2276,10 @@ export default function App() {
     if (!item) return;
     if (savedPhotoIdsRef.current[item.id]) {
       playSE(SE_NO_CREATURE);
-      Alert.alert(t('alert_delete_protected_title'), t('alert_delete_protected_body'));
+      showAlert(t('alert_delete_protected_title'), t('alert_delete_protected_body'));
       return;
     }
-    Alert.alert(t('alert_delete_confirm_title'), t('alert_delete_confirm_body'), [
+    showAlert(t('alert_delete_confirm_title'), t('alert_delete_confirm_body'), [
       { text: t('btn_cancel'), style: 'cancel' },
       { text: t('btn_delete'), style: 'destructive', onPress: async () => {
         playSE(SE_DELETE);
@@ -2082,7 +2296,7 @@ export default function App() {
     if (!item) return;
     const isProtected = savedPhotoIdsRef.current[item.id];
     if (isProtected) {
-      Alert.alert(t('alert_unprotect_confirm_title'), t('alert_unprotect_confirm_body'), [
+      showAlert(t('alert_unprotect_confirm_title'), t('alert_unprotect_confirm_body'), [
         { text: t('btn_cancel'), style: 'cancel' },
         { text: t('btn_yes'), onPress: async () => {
           playSE(SE_BUTTON01A);
@@ -2090,22 +2304,24 @@ export default function App() {
           delete newSaved[item.id];
           setSavedPhotoIds(newSaved);
           savedPhotoIdsRef.current = newSaved;
+          if (gallerySortModeRef.current === 'favorite') pendingResortRef.current = true;
           await persistSavedPhotoIds(newSaved);
         }},
       ]);
     } else {
       const currentCount = Object.keys(savedPhotoIdsRef.current).length;
       if (currentCount >= PROTECT_LIMIT) {
-        Alert.alert(t('alert_protect_limit_title'), t('alert_protect_limit_body', { limit: PROTECT_LIMIT }));
+        showAlert(t('alert_protect_limit_title'), t('alert_protect_limit_body', { limit: PROTECT_LIMIT }));
         return;
       }
-      Alert.alert(t('alert_protect_confirm_title'), t('alert_protect_confirm_body'), [
+      showAlert(t('alert_protect_confirm_title'), t('alert_protect_confirm_body'), [
         { text: t('btn_cancel'), style: 'cancel' },
         { text: t('btn_yes'), onPress: async () => {
           playSE(SE_BUTTON01A);
           const newSaved = { ...savedPhotoIdsRef.current, [item.id]: true };
           setSavedPhotoIds(newSaved);
           savedPhotoIdsRef.current = newSaved;
+          if (gallerySortModeRef.current === 'favorite') pendingResortRef.current = true;
           await persistSavedPhotoIds(newSaved);
         }},
       ]);
@@ -2131,7 +2347,7 @@ export default function App() {
   // テーマ削除（取得フラグをOFF）
   const handleThemeDelete = (id) => {
     const label = t('theme_' + id);
-    Alert.alert(
+    showAlert(
       t('alert_theme_delete_title'),
       t('alert_theme_delete_body', { label }),
       [
@@ -2164,7 +2380,7 @@ export default function App() {
       // OFF→ON：全テーマの残り回数がすべて0なら確認ダイアログ
       const allZero = Object.values(frameCounts).every(n => (n ?? 0) === 0);
       if (allZero) {
-        Alert.alert(
+        showAlert(
           'フレームの残りがありません',
           'フレームを取得した場合に、自動でフレームを表示します\nよろしいですか？',
           [
@@ -2223,7 +2439,7 @@ export default function App() {
       setSaveMode('album');
       persistSettings(theme, true, frameEnabled, fullScreen, unlockedThemes, frameCounts, language);
     } else {
-      Alert.alert(
+      showAlert(
         t('alert_perm_needed_title'),
         t('alert_perm_needed_body'),
         [{ text: t('btn_cancel'), style: 'cancel' }]
@@ -2253,14 +2469,14 @@ export default function App() {
     const hasSaved = selectedIds.some(id => savedIds[id]);
     if (hasSaved) {
       playSE(SE_NO_CREATURE);
-      Alert.alert(
+      showAlert(
         t('alert_delete_protected_title'),
         t('alert_delete_protected_multi'),
         [{ text: t('btn_ok') }]
       );
       return;
     }
-    Alert.alert(
+    showAlert(
       t('alert_delete_confirm_title'),
       t('alert_delete_multi_body', { count: selectedIds.length }),
       [
@@ -2290,7 +2506,7 @@ export default function App() {
     const newlyProtected = selectedIds.filter(id => !savedPhotoIdsRef.current[id]);
     const currentCount   = Object.keys(savedPhotoIdsRef.current).length;
     if (currentCount + newlyProtected.length > PROTECT_LIMIT) {
-      Alert.alert(
+      showAlert(
         t('alert_protect_limit_title'),
         t('alert_protect_limit_multi_body', { limit: PROTECT_LIMIT }),
         [
@@ -2300,7 +2516,7 @@ export default function App() {
       );
       return;
     }
-    Alert.alert(
+    showAlert(
       t('alert_protect_confirm_title'),
       t('alert_protect_multi_body', { count: selectedIds.length }),
       [
@@ -2316,6 +2532,15 @@ export default function App() {
     selectedIds.forEach(id => { newSaved[id] = true; });
     setSavedPhotoIds(newSaved);
     savedPhotoIdsRef.current = newSaved;
+    // await前に再ソート（awaitで中断されても確実に実行）
+    if (gallerySortModeRef.current === 'favorite') {
+      setGalleryAssets(prev => [...prev].sort((a, b) => {
+        const af = newSaved[a.id] ? 1 : 0;
+        const bf = newSaved[b.id] ? 1 : 0;
+        if (bf !== af) return bf - af;
+        return (photoBaseOrderRef.current[a.id] ?? 999) - (photoBaseOrderRef.current[b.id] ?? 999);
+      }));
+    }
     await persistSavedPhotoIds(newSaved);
     exitSelectionMode();
   };
@@ -2327,7 +2552,7 @@ export default function App() {
     const hasProtected = selectedIds.some(id => savedPhotoIdsRef.current[id]);
     if (!hasProtected) return;
     playSE(SE_BUTTON01A);
-    Alert.alert(
+    showAlert(
       t('alert_unprotect_confirm_title'),
       t('alert_unprotect_multi_body'),
       [
@@ -2343,6 +2568,15 @@ export default function App() {
     selectedIds.forEach(id => { delete newSaved[id]; });
     setSavedPhotoIds(newSaved);
     savedPhotoIdsRef.current = newSaved;
+    // await前に再ソート（awaitで中断されても確実に実行）
+    if (gallerySortModeRef.current === 'favorite') {
+      setGalleryAssets(prev => [...prev].sort((a, b) => {
+        const af = newSaved[a.id] ? 1 : 0;
+        const bf = newSaved[b.id] ? 1 : 0;
+        if (bf !== af) return bf - af;
+        return (photoBaseOrderRef.current[a.id] ?? 999) - (photoBaseOrderRef.current[b.id] ?? 999);
+      }));
+    }
     await persistSavedPhotoIds(newSaved);
     exitSelectionMode();
   };
@@ -2350,36 +2584,20 @@ export default function App() {
   // ギャラリー再読み込み（削除後に呼ぶ）
   const reloadGallery = async () => {
     try {
-      let assets;
-      const fetchLimit = overflowModeRef.current ? OVERFLOW_LIMIT : PHOTO_LIMIT;
-      if (saveMode === 'album') {
-        const album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
-        if (!album) { setGalleryAssets([]); return; }
-        const result = await MediaLibrary.getAssetsAsync({
-          album,
-          sortBy: MediaLibrary.SortBy.creationTime,
-          mediaType: MediaLibrary.MediaType.photo,
-          first: fetchLimit,
-        });
-        assets = result.assets;
-      } else {
-        const result = await MediaLibrary.getAssetsAsync({
-          sortBy: MediaLibrary.SortBy.creationTime,
-          mediaType: MediaLibrary.MediaType.photo,
-          first: fetchLimit,
-        });
-        assets = result.assets;
-      }
-      const assetsWithLocalUri = (await Promise.all(
-        assets.map(async (asset) => {
-          try {
-            const info = await MediaLibrary.getAssetInfoAsync(asset);
-            if (!info.localUri) return null;
-            return { id: asset.id, uri: info.localUri };
-          } catch { return null; }
-        })
-      )).filter(Boolean);
-      setGalleryAssets(assetsWithLocalUri);
+      const items = await fetchGalleryAssets(gallerySortModeRef.current);
+      setGalleryAssets(items ?? []);
+    } catch {}
+  };
+
+  // ソートモードを循環切り替えして再読み込み
+  const cycleSortMode = async () => {
+    const MODES = ['newest', 'oldest', 'favorite', 'theme'];
+    const next = MODES[(MODES.indexOf(gallerySortModeRef.current) + 1) % MODES.length];
+    gallerySortModeRef.current = next;
+    setGallerySortMode(next);
+    try {
+      const items = await fetchGalleryAssets(next);
+      setGalleryAssets(items ?? []);
     } catch {}
   };
 
@@ -2398,7 +2616,7 @@ export default function App() {
 
   // 共通のExitボタン押下ハンドラ
   const onExitPress = () =>
-    Alert.alert(
+    showAlert(
       'アプリの終了方法',
       '画面下からスワイプアップして終了できます。\n\n設定ファイルをリセットしたい場合は「リセット」を押してください。次回起動時に初期設定から始まります。',
       [
@@ -2406,9 +2624,9 @@ export default function App() {
         { text: 'リセット', style: 'destructive', onPress: async () => {
           try {
             await AsyncStorage.removeItem(SETTINGS_KEY);
-            Alert.alert('リセット完了', '設定ファイルを削除しました。');
+            showAlert('リセット完了', '設定ファイルを削除しました。');
           } catch {
-            Alert.alert('エラー', '設定ファイルの削除に失敗しました。');
+            showAlert('エラー', '設定ファイルの削除に失敗しました。');
           }
         }},
       ]
@@ -2455,6 +2673,9 @@ export default function App() {
           pauseAfterCapturable={activeCreature.pauseAfterCapturable}
           onCapturable={() => { capturableRef.current = true; setCreatureCapturable(true); }}
           onUncapturable={() => { capturableRef.current = false; setCreatureCapturable(false); }}
+          opacityRef={creatureOpacityRef}
+          pauseFnRef={creaturePauseFnRef}
+          resumeFnRef={creatureResumeFnRef}
         />
       )}
 
@@ -2902,6 +3123,11 @@ export default function App() {
                   </Text>
                 </Text>
                 <View style={styles.galleryHeaderRight}>
+                  <TouchableOpacity style={styles.gallerySortBtn} onPress={cycleSortMode}>
+                    <Text style={styles.gallerySortText}>
+                      {gallerySortMode === 'newest' ? '🕐' : gallerySortMode === 'oldest' ? '🕙' : gallerySortMode === 'favorite' ? '★' : '🎨'}
+                    </Text>
+                  </TouchableOpacity>
                   <TouchableOpacity style={styles.galleryActionBtn} onPress={enterSelectionMode}>
                     <Text style={styles.galleryActionText}>☑️</Text>
                   </TouchableOpacity>
@@ -3280,6 +3506,8 @@ const styles = StyleSheet.create({
   galleryCountOverflow: { color: '#ff3b30', fontWeight: 'bold' },
   galleryClose: { color: '#fff', fontSize: 22, fontWeight: 'bold', marginLeft: 16 },
   galleryHeaderRight: { flexDirection: 'row', alignItems: 'center' },
+  gallerySortBtn: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: 'rgba(255,255,255,0.15)', marginRight: 6 },
+  gallerySortText: { color: '#fff', fontSize: 15 },
   gallerySelectionExit: { color: '#4CD964', fontSize: 15, fontWeight: '600' },
   gallerySelectionActions: { flexDirection: 'row', gap: 8 },
   galleryActionBtn: { padding: 6 },
