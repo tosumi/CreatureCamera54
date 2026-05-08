@@ -14,7 +14,7 @@ npx expo start --android # Android emulator
 
 ## Architecture
 
-Single-file app: all logic lives in `App.js` (~1900 lines). No navigation library, no state management library.
+Single-file app: all logic lives in `App.js` (~3800 lines). No navigation library, no state management library.
 
 ### Core feature flow
 
@@ -22,6 +22,21 @@ Single-file app: all logic lives in `App.js` (~1900 lines). No navigation librar
 - 「ちょっと変わった生き物」は、時々カメラに映り込んだりします。
 - 中には、撮影をちょっと楽しくしてくれる、アイテムが撮影できる場合があります。
 - 変わった生き物たちと一緒に、テーマに合ったフレームで楽しい写真を撮影しましょう。
+
+## Dependencies (key packages)
+
+```json
+"expo": "~54.0.33",
+"expo-av": "~16.0.8",
+"expo-camera": "~17.0.10",
+"expo-file-system": "~18.0.11",
+"expo-media-library": "~18.2.1",
+"react-native-view-shot": "4.0.3",
+"react-native-webview": "^13.13.5"
+```
+
+- `expo-file-system` は `expo-file-system/legacy` から import すること（v18 では legacy API パスが必要）
+- `react-native-webview` はセピア/モノクロフィルターの Canvas 処理に使用
 
 ## Hand over
 
