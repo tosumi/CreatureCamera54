@@ -1172,7 +1172,7 @@ export default function App() {
 
   // WebView Canvas で写真にセピア/グレースケールフィルターを適用し、新 URI を返す
   const applyPhotoFilter = useCallback(async (uri, filterType) => {
-    const b64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+    const b64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
     const css = filterType === 'sepia' ? 'sepia(1)' : 'grayscale(1)';
     const html = `<!DOCTYPE html><html><body style="margin:0"><canvas id="c"></canvas><script>
 const i=new Image();
@@ -2815,7 +2815,7 @@ i.src='data:image/jpeg;base64,${b64}';
             try {
               const b64 = event.nativeEvent.data.replace(/^data:image\/jpeg;base64,/, '');
               outUri = `${FileSystem.cacheDirectory}filter_${Date.now()}.jpg`;
-              await FileSystem.writeAsStringAsync(outUri, b64, { encoding: FileSystem.EncodingType.Base64 });
+              await FileSystem.writeAsStringAsync(outUri, b64, { encoding: 'base64' });
             } catch (e) {
               console.warn('filter write error:', e);
               outUri = null;
