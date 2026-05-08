@@ -1185,8 +1185,8 @@ i.onload=()=>{
 };
 i.src='data:image/jpeg;base64,${b64}';
 </script></body></html>`;
-    return new Promise((resolve) => {
-      filterResolveRef.current = resolve;
+    return new Promise((resolve, reject) => {
+      filterResolveRef.current = (uri) => uri ? resolve(uri) : reject(new Error('filter failed'));
       setFilterPending({ html });
     });
   }, []);
@@ -1880,8 +1880,11 @@ i.src='data:image/jpeg;base64,${b64}';
         ? (THEME_FRAMES[theme] ?? null) : null;
       const appliedFilter = filterTypeRef.current;
       if (appliedFilter) { filterTypeRef.current = null; setFilterType(null); }
-      // フィルターアイテム使用中は WebView で写真を事前処理してから合成
-      const photoUri = appliedFilter ? await applyPhotoFilter(photo.uri, appliedFilter) : photo.uri;
+      // フィルターアイテム使用中は WebView で写真を事前処理してから合成（失敗時はフィルターなしで続行）
+      let photoUri = photo.uri;
+      if (appliedFilter) {
+        try { photoUri = await applyPhotoFilter(photo.uri, appliedFilter); } catch (fe) { console.warn('filter error:', fe); }
+      }
       setCompositing({ photoUri, creatureSnapshot, frameSource, usedFrameTheme: frameSource ? theme : null, harmonyEntries, wasScope, fullScreen });
     } catch (e) {
       isTakingPictureRef.current = false;
@@ -2798,14 +2801,16 @@ i.src='data:image/jpeg;base64,${b64}';
           originWhitelist={['*']}
           source={{ html: filterPending.html }}
           onMessage={async (event) => {
+            let outUri = null;
             try {
               const b64 = event.nativeEvent.data.replace(/^data:image\/jpeg;base64,/, '');
-              const outUri = `${FileSystem.cacheDirectory}filter_${Date.now()}.jpg`;
+              outUri = `${FileSystem.cacheDirectory}filter_${Date.now()}.jpg`;
               await FileSystem.writeAsStringAsync(outUri, b64, { encoding: FileSystem.EncodingType.Base64 });
-              filterResolveRef.current?.(outUri);
-            } catch {
-              // フィルター失敗時はオリジナルをそのまま使用（resolveは撮影フロー側がtry-catchで処理）
+            } catch (e) {
+              console.warn('filter write error:', e);
+              outUri = null;
             } finally {
+              filterResolveRef.current?.(outUri); // null なら呼び出し元の catch が処理
               filterResolveRef.current = null;
               setFilterPending(null);
             }
