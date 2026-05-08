@@ -381,13 +381,13 @@ const PROTECT_LIMIT = 20;  // 保護できる写真の上限枚数
 const FRAME_MAX = 20;      // フレーム残り回数の上限
 const SPECIAL_ITEM_CHANCE = 0.10; // 特殊アイテム出現確率（10%）
 const SPECIAL_ITEMS = [
-  { type: 'theme',    weight: 10, emoji: '🎁', label: '新テーマ' },
+  { type: 'theme',    weight:  5, emoji: '🎁', label: '新テーマ' },
   { type: 'frame',    weight: 40, emoji: '🌟', label: 'フレーム+5' },
-  { type: 'harmony',  weight: 20, emoji: '🎊', label: '和気あいあい' },
-  { type: 'scope',    weight: 30, emoji: '🔭', label: 'スコープ' },
-  { type: 'timeslow', weight: 25, emoji: '⏱️', label: 'タイムスロー' },
-  { type: 'sepia',    weight: 15, emoji: '🕰️', label: 'セピアレンズ' },
-  { type: 'mono',     weight: 15, emoji: '🎞️', label: 'モノクロレンズ' },
+  { type: 'harmony',  weight: 10, emoji: '🎊', label: '和気あいあい' },
+  { type: 'scope',    weight: 16, emoji: '🔭', label: 'スコープ' },
+  { type: 'timeslow', weight: 13, emoji: '⏱️', label: 'タイムスロー' },
+  { type: 'sepia',    weight:  8, emoji: '🕰️', label: 'セピアレンズ' },
+  { type: 'mono',     weight:  8, emoji: '🎞️', label: 'モノクロレンズ' },
 ];
 function pickSpecialItem(excludeTypes = []) {
   const pool  = excludeTypes.length ? SPECIAL_ITEMS.filter(i => !excludeTypes.includes(i.type)) : SPECIAL_ITEMS;
