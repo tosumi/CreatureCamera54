@@ -1138,7 +1138,8 @@ export default function App() {
   const [unlockedThemes, setUnlockedThemes]   = useState(['default', 'flower', 'stylish']);
   // テーマごとのフレーム残り使用回数（上限20、初期値0）
   const [frameCounts, setFrameCounts]         = useState(INITIAL_FRAME_COUNTS);
-  const frameCountsRef = useRef(INITIAL_FRAME_COUNTS);
+  const frameCountsRef     = useRef(INITIAL_FRAME_COUNTS);
+  const unlockedThemesRef  = useRef(['default', 'flower', 'stylish']);
 
   // ギャラリー選択モード
   const [selectionMode, setSelectionMode]     = useState(false);
@@ -1469,10 +1470,14 @@ i.src='data:image/jpeg;base64,${b64}';
         forceNextSpecialItemRef.current = false;
         playSERef.current?.(SE_ITEM_PREVIEW);
         // 予兆SE再生後1秒待ってから出現アニメーション開始
+        const _allFramesMax = unlockedThemesRef.current.every(id => (frameCountsRef.current[id] ?? 0) >= FRAME_MAX);
+        const _allUnlocked  = ALL_THEME_IDS.every(id => unlockedThemesRef.current.includes(id));
         const item = pickSpecialItem([
           ...(scopeActiveRef.current    ? ['scope']    : []),
           ...(timeslowActiveRef.current ? ['timeslow'] : []),
           ...(filterTypeRef.current     ? [filterTypeRef.current] : []),
+          ...(_allFramesMax             ? ['frame']    : []),
+          ...(_allFramesMax && _allUnlocked ? ['theme'] : []),
         ]);
         timerRef.current = setTimeout(() => {
           const spawnData = { creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, vp, isSpecial: true, itemType: item.type, itemLabel: t('item_' + item.type) };
@@ -1492,10 +1497,14 @@ i.src='data:image/jpeg;base64,${b64}';
       if (!harmonyActiveRef.current && Math.random() < effectiveChance) {
         playSERef.current?.(SE_ITEM_PREVIEW); // アイテム出現予告SE
         // 予兆SE再生後1秒待ってから出現アニメーション開始
+        const _allFramesMax = unlockedThemesRef.current.every(id => (frameCountsRef.current[id] ?? 0) >= FRAME_MAX);
+        const _allUnlocked  = ALL_THEME_IDS.every(id => unlockedThemesRef.current.includes(id));
         const item = pickSpecialItem([
           ...(scopeActiveRef.current    ? ['scope']    : []),
           ...(timeslowActiveRef.current ? ['timeslow'] : []),
           ...(filterTypeRef.current     ? [filterTypeRef.current] : []),
+          ...(_allFramesMax             ? ['frame']    : []),
+          ...(_allFramesMax && _allUnlocked ? ['theme'] : []),
         ]);
         timerRef.current = setTimeout(() => {
           const spawnData = { creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, vp, isSpecial: true, itemType: item.type, itemLabel: t('item_' + item.type) };
@@ -1883,7 +1892,7 @@ i.src='data:image/jpeg;base64,${b64}';
       // フィルターアイテム使用中は WebView で写真を事前処理してから合成（失敗時はフィルターなしで続行）
       let photoUri = photo.uri;
       if (appliedFilter) {
-        try { photoUri = await applyPhotoFilter(photo.uri, appliedFilter); } catch (fe) { console.warn('filter error:', fe); }
+        try { photoUri = await applyPhotoFilter(photo.uri, appliedFilter); } catch (fe) { console.error('[FILTER ERROR]', fe?.message ?? fe); }
       }
       setCompositing({ photoUri, creatureSnapshot, frameSource, usedFrameTheme: frameSource ? theme : null, harmonyEntries, wasScope, fullScreen });
     } catch (e) {
@@ -2257,6 +2266,7 @@ i.src='data:image/jpeg;base64,${b64}';
   galleryCountRef.current     = galleryAssets.length;
   primarySlotRef.current      = primarySlot;
   frameCountsRef.current      = frameCounts;
+  unlockedThemesRef.current   = unlockedThemes;
   selectedPhotoIdsRef.current = selectedPhotoIds;
   savedPhotoIdsRef.current    = savedPhotoIds;
   overflowModeRef.current     = overflowMode;
