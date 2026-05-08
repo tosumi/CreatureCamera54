@@ -117,6 +117,7 @@ const TRANSLATIONS = {
     item_frame:    'フレーム+5',
     item_harmony:  '和気あいあい',
     item_scope:    'スコープ',
+    item_timeslow: 'タイムスロー',
     // Alert: 生き物・撮影
     alert_no_creature_title:   '生き物がいません！',
     alert_no_creature_body:    '生き物が現れたら撮影してね 👀',
@@ -132,10 +133,13 @@ const TRANSLATIONS = {
     alert_theme_all_body:      '「{label}」のテーマは既に入手済みです。\n「{label}」のテーマにフレームを追加します。',
     alert_frame_plus_title:    '🌟 フレーム回数+5！',
     alert_frame_plus_body:     'フレームの残り回数が{count}回になりました！',
+    alert_frame_redirect_body: '「{label}」のフレームの残り回数が{count}回になりました！',
     alert_harmony_title:       '🎊 和気あいあい！',
     alert_harmony_body:        '次の撮影で生き物たちが集まります！',
     alert_scope_title:         '🔭 スコープ！',
     alert_scope_body:          '生き物の登場場所がわかるようになりました！',
+    alert_timeslow_title:      '⏱️ タイムスロー！',
+    alert_timeslow_body:       '次の生き物の動きがゆっくりになります！',
     // Alert: ギャラリー
     alert_no_perm_title:              '写真へのアクセス許可がありません',
     alert_no_photos_title:            'まだ写真がありません',
@@ -248,6 +252,7 @@ const TRANSLATIONS = {
     item_frame:    'Frame +5',
     item_harmony:  'Harmony',
     item_scope:    'Scope',
+    item_timeslow: 'Time Slow',
     // Alert: 生き物・撮影
     alert_no_creature_title:   'No creature!',
     alert_no_creature_body:    'Wait for a creature to appear 👀',
@@ -263,10 +268,13 @@ const TRANSLATIONS = {
     alert_theme_all_body:      'You already have the "{label}" theme.\nAdding frames to the "{label}" theme.',
     alert_frame_plus_title:    '🌟 Frame +5!',
     alert_frame_plus_body:     'You now have {count} frames remaining!',
+    alert_frame_redirect_body: '"{label}" theme now has {count} frames!',
     alert_harmony_title:       '🎊 Harmony!',
     alert_harmony_body:        'Creatures will gather on your next shot!',
     alert_scope_title:         '🔭 Scope!',
     alert_scope_body:          "You can now see where creatures will appear!",
+    alert_timeslow_title:      '⏱️ Time Slow!',
+    alert_timeslow_body:       'The next creature will move slowly!',
     // Alert: ギャラリー
     alert_no_perm_title:              'Photo Access Required',
     alert_no_photos_title:            'No photos yet',
@@ -361,10 +369,11 @@ const PROTECT_LIMIT = 20;  // 保護できる写真の上限枚数
 const FRAME_MAX = 20;      // フレーム残り回数の上限
 const SPECIAL_ITEM_CHANCE = 0.10; // 特殊アイテム出現確率（10%）
 const SPECIAL_ITEMS = [
-  { type: 'theme',   weight: 10, emoji: '🎁', label: '新テーマ' },
-  { type: 'frame',   weight: 40, emoji: '🌟', label: 'フレーム+5' },
-  { type: 'harmony', weight: 20, emoji: '🎊', label: '和気あいあい' },
-  { type: 'scope',   weight: 30, emoji: '🔭', label: 'スコープ' },
+  { type: 'theme',    weight: 10, emoji: '🎁', label: '新テーマ' },
+  { type: 'frame',    weight: 40, emoji: '🌟', label: 'フレーム+5' },
+  { type: 'harmony',  weight: 20, emoji: '🎊', label: '和気あいあい' },
+  { type: 'scope',    weight: 30, emoji: '🔭', label: 'スコープ' },
+  { type: 'timeslow', weight: 25, emoji: '⏱️', label: 'タイムスロー' },
 ];
 function pickSpecialItem(excludeTypes = []) {
   const pool  = excludeTypes.length ? SPECIAL_ITEMS.filter(i => !excludeTypes.includes(i.type)) : SPECIAL_ITEMS;
@@ -701,7 +710,7 @@ function getEdgeSetup(edge, size, vp) {
 
 const FULL_VP = { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, fullScreen: true };
 
-function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onCapturable, onUncapturable, vp, isSpecial, itemLabel, pauseAfterCapturable, opacityRef, pauseFnRef, resumeFnRef }) {
+function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onCapturable, onUncapturable, vp, isSpecial, itemLabel, pauseAfterCapturable, opacityRef, pauseFnRef, resumeFnRef, slowFactor = 1 }) {
   const viewport      = vp ?? FULL_VP;
   const { x: VX, y: VY, w: VW, h: VH } = viewport;
   const isFade        = mode === 'fadein';
@@ -768,12 +777,12 @@ function CreatureOverlay({ creature, mode, edge, onDone, posRef, onFinalPos, onC
     // ぷにぷに middle アニメーション + 退場（毎回新規生成）
     const makeMidAndExit = () => {
       Animated.sequence([
-        Animated.delay(1500),
+        Animated.delay(1500 * slowFactor),
         Animated.sequence([
           Animated.timing(scaleAnim, { toValue: 1.3, duration: 200, useNativeDriver: false }),
           Animated.timing(scaleAnim, { toValue: 1.0, duration: 200, useNativeDriver: false }),
         ]),
-        Animated.delay(800),
+        Animated.delay(800 * slowFactor),
       ]).start(({ finished }) => {
         if (!finished || !alive) return;
         uncapturable();
@@ -1127,6 +1136,7 @@ export default function App() {
   const [gallerySortMode, setGallerySortMode] = useState('newest');
   // 特殊アイテム状態
   const [harmonyActive, setHarmonyActive]     = useState(false); // 和気あいあい発動中
+  const [timeslowActive, setTimeslowActive]   = useState(false); // タイムスロー発動中
   const [scopeActive, setScopeActive]         = useState(false); // スコープ発動中
   const [creatureCapturable, setCreatureCapturable] = useState(false); // 現在の生き物が撮影可能か
   const [autoDelete, setAutoDelete]           = useState(false);        // 自動削除：有効/無効
@@ -1137,6 +1147,7 @@ export default function App() {
   const [langDropdownOpen, setLangDropdownOpen] = useState(false);      // 言語ドロップダウン開閉
   const harmonyActiveRef   = useRef(false);
   const scopeActiveRef     = useRef(false);
+  const timeslowActiveRef  = useRef(false);
   const autoDeleteRef      = useRef(false);
   const autoDeleteTargetRef = useRef('oldest');
   const bgmEnabledRef         = useRef(true);
@@ -1416,7 +1427,10 @@ export default function App() {
         forceNextSpecialItemRef.current = false;
         playSERef.current?.(SE_ITEM_PREVIEW);
         // 予兆SE再生後1秒待ってから出現アニメーション開始
-        const item = pickSpecialItem(scopeActiveRef.current ? ['scope'] : []);
+        const item = pickSpecialItem([
+          ...(scopeActiveRef.current    ? ['scope']    : []),
+          ...(timeslowActiveRef.current ? ['timeslow'] : []),
+        ]);
         timerRef.current = setTimeout(() => {
           const spawnData = { creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, vp, isSpecial: true, itemType: item.type, itemLabel: t('item_' + item.type) };
           if (alertActiveRef.current) {
@@ -1435,7 +1449,10 @@ export default function App() {
       if (!harmonyActiveRef.current && Math.random() < effectiveChance) {
         playSERef.current?.(SE_ITEM_PREVIEW); // アイテム出現予告SE
         // 予兆SE再生後1秒待ってから出現アニメーション開始
-        const item = pickSpecialItem(scopeActiveRef.current ? ['scope'] : []);
+        const item = pickSpecialItem([
+          ...(scopeActiveRef.current    ? ['scope']    : []),
+          ...(timeslowActiveRef.current ? ['timeslow'] : []),
+        ]);
         timerRef.current = setTimeout(() => {
           const spawnData = { creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, vp, isSpecial: true, itemType: item.type, itemLabel: t('item_' + item.type) };
           if (alertActiveRef.current) {
@@ -1467,7 +1484,12 @@ export default function App() {
                      : mode === 'top'      ? 'top'
                      : mode === 'edge3'    ? EDGE3_POOL[Math.floor(Math.random() * EDGE3_POOL.length)]
                      : EDGE_POOL[Math.floor(Math.random() * EDGE_POOL.length)];
-      setActiveCreature({ creature, mode, edge, key: Date.now(), vp });
+      const slowFactor = timeslowActiveRef.current ? 2.5 : 1;
+      if (timeslowActiveRef.current) {
+        timeslowActiveRef.current = false;
+        setTimeslowActive(false);
+      }
+      setActiveCreature({ creature, mode, edge, key: Date.now(), vp, slowFactor });
     }, delay);
   }, [theme, fullScreen]);
 
@@ -1741,13 +1763,23 @@ export default function App() {
           }
         }
       } else if (itype === 'frame') {
-        const newCount = Math.min(FRAME_MAX, (frameCountsRef.current[theme] ?? 0) + 5);
-        const newCounts = { ...frameCountsRef.current, [theme]: newCount };
+        let targetId = theme;
+        if ((frameCountsRef.current[theme] ?? 0) >= FRAME_MAX) {
+          const available = unlockedThemes.filter(id => (frameCountsRef.current[id] ?? 0) < FRAME_MAX);
+          if (available.length > 0) {
+            targetId = available[Math.floor(Math.random() * available.length)];
+          }
+        }
+        const newCount = Math.min(FRAME_MAX, (frameCountsRef.current[targetId] ?? 0) + 5);
+        const newCounts = { ...frameCountsRef.current, [targetId]: newCount };
         setFrameCounts(newCounts);
         frameCountsRef.current = newCounts;
         persistSettings(theme, saveMode === 'album', frameEnabled, fullScreen, unlockedThemes, newCounts, language);
         playSE(SE_ITEM_FRAME);
-        showAlert(t('alert_frame_plus_title'), t('alert_frame_plus_body', { count: newCount }));
+        const alertBody = targetId !== theme
+          ? t('alert_frame_redirect_body', { label: t('theme_' + targetId), count: newCount })
+          : t('alert_frame_plus_body', { count: newCount });
+        showAlert(t('alert_frame_plus_title'), alertBody);
       } else if (itype === 'harmony') {
         setHarmonyActive(true);
         harmonyActiveRef.current = true;
@@ -1759,6 +1791,11 @@ export default function App() {
         scopeCountRef.current = 1;
         playSE(SE_ITEM_SCOPE);
         showAlert(t('alert_scope_title'), t('alert_scope_body'));
+      } else if (itype === 'timeslow') {
+        setTimeslowActive(true);
+        timeslowActiveRef.current = true;
+        playSE(SE_ITEM_FRAME);
+        showAlert(t('alert_timeslow_title'), t('alert_timeslow_body'));
       }
       return;
     }
@@ -2165,6 +2202,7 @@ export default function App() {
   saveModeRef.current         = saveMode;
   harmonyActiveRef.current        = harmonyActive;
   scopeActiveRef.current          = scopeActive;
+  timeslowActiveRef.current       = timeslowActive;
   autoDeleteRef.current           = autoDelete;
   autoDeleteTargetRef.current     = autoDeleteTarget;
   bgmEnabledRef.current           = bgmEnabled;
@@ -2671,6 +2709,7 @@ export default function App() {
           isSpecial={activeCreature.isSpecial}
           itemLabel={activeCreature.itemLabel}
           pauseAfterCapturable={activeCreature.pauseAfterCapturable}
+          slowFactor={activeCreature.slowFactor ?? 1}
           onCapturable={() => { capturableRef.current = true; setCreatureCapturable(true); }}
           onUncapturable={() => { capturableRef.current = false; setCreatureCapturable(false); }}
           opacityRef={creatureOpacityRef}
