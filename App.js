@@ -20,7 +20,7 @@ import * as MediaLibrary from 'expo-media-library';
 import { captureRef } from 'react-native-view-shot';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { WebView } from 'react-native-webview';
 
 const ALBUM_NAME = 'CreatureCamera';
