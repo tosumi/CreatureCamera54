@@ -94,17 +94,15 @@ const [filterType, setFilterType]         = useState(null);   // null | 'sepia' 
 const filterTypeRef                        = useRef(null);
 const [filterPending, setFilterPending]    = useState(null);   // WebViewリクエスト
 const filterResolveRef                     = useRef(null);     // Promise resolve保持
+const photoLoadResolveRef                  = useRef(null);     // compositing写真onLoad待機用
 const unlockedThemesRef                    = useRef([...]);    // 除外ロジック用
 ```
 
+#### compositing写真のonLoad待機（タイミングバグ修正）
+
+フィルター済み写真は新規キャッシュファイルのため、`Image` がレンダリング完了する前に `view-shot` がキャプチャしてしまい、セピア効果が保存されないバグがあった。フレームと同様に `photoLoadResolveRef` + `onLoad` ハンドラで写真の描画完了を待ってからキャプチャするよう修正。
+
 ---
-
-### デバッグ設定（本番リリース前に要戻し）
-
-```js
-// App.js ~370行
-const SPECIAL_ITEM_CHANCE = 1.00; // デバッグ用：アイテム100%（本番は0.10）
-```
 
 ---
 
@@ -143,7 +141,7 @@ const PHOTO_LIMIT             = 30;
 const OVERFLOW_LIMIT          = 80;
 const PROTECT_LIMIT           = 20;
 const FRAME_MAX               = 20;
-const SPECIAL_ITEM_CHANCE     = 1.00;  // ⚠️ デバッグ用（本番: 0.10）
+const SPECIAL_ITEM_CHANCE     = 0.10;
 const TUTORIAL_CREATURE_SIZE  = 120;
 const PITY_THRESHOLD          = 10;
 const CAMERA_AREA_H           = SCREEN_H * 0.8;
@@ -203,6 +201,7 @@ const THEME_SPECIAL_ANIMS = {
 | `unlockedThemesRef` | 取得済みテーマ一覧（アイテム除外判定用） |
 | `filterTypeRef` | 発動中のフィルター種別（null / 'sepia' / 'mono'） |
 | `filterResolveRef` | WebViewフィルター処理のPromise resolve保持 |
+| `photoLoadResolveRef` | compositing写真Imageのonload待機（view-shotタイミング制御） |
 | `galleryVisibleRef` | showAlert.resume() でオーバーレイ開放チェック用 |
 | `settingsVisibleRef` | 同上 |
 
@@ -222,8 +221,6 @@ const THEME_SPECIAL_ANIMS = {
 
 | 優先度 | 機能 | 備考 |
 |---|---|---|
-| 高 | `SPECIAL_ITEM_CHANCE` を 0.10 に戻す | デバッグ用に 1.00 にしてある（本番リリース前に必須） |
-| 高 | セピア/モノクロの実機動作確認 | WebView Canvas方式・処理時間の確認 |
 | 高 | App Store スクリーンショット差し替え | 日本語・英語コピー作成済み（0501セッション） |
 | 中 | BIGクリーチャー✨アイテム | 次の生き物をLサイズ＋光エフェクトで出現 |
 | 中 | 生き物アイドルアニメーション | 停止中に微妙に揺れる・瞬き |
@@ -242,3 +239,4 @@ const THEME_SPECIAL_ANIMS = {
 31. **WebView `ctx.filter` が無効（0509）**: `getImageData/putImageData` + 係数演算でピクセル直接変換に変更。
 32. **`expo-file-system` の `EncodingType.Base64` が undefined（0509）**: 文字列 `'base64'` を直接使用。
 33. **`expo-file-system` の `readAsStringAsync` が deprecated（0509）**: `expo-file-system/legacy` から import するよう変更。
+34. **フィルター写真が view-shot に反映されない（0509）**: compositing の写真 `Image` に `onLoad` ハンドラ（`photoLoadResolveRef`）を追加し、写真描画完了後にキャプチャするよう修正。100ms固定待機では新規キャッシュファイルの読み込みが間に合わなかった。

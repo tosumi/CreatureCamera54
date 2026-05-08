@@ -381,7 +381,7 @@ const PHOTO_LIMIT = 30;
 const OVERFLOW_LIMIT = 80; // 超過モード時の表示上限
 const PROTECT_LIMIT = 20;  // 保護できる写真の上限枚数
 const FRAME_MAX = 20;      // フレーム残り回数の上限
-const SPECIAL_ITEM_CHANCE = 1.00; // デバッグ用：アイテム100%（本番は0.10）
+const SPECIAL_ITEM_CHANCE = 0.10;
 const SPECIAL_ITEMS = [
   { type: 'theme',    weight:  5, emoji: '🎁', label: '新テーマ' },
   { type: 'frame',    weight: 40, emoji: '🌟', label: 'フレーム+5' },
@@ -1172,9 +1172,7 @@ export default function App() {
 
   // WebView Canvas でピクセルを直接変換（ctx.filter非依存・全WebView対応）
   const applyPhotoFilter = useCallback(async (uri, filterType) => {
-    console.log('[FILTER] start', filterType, uri.slice(-30));
     const b64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
-    console.log('[FILTER] b64 length:', b64.length);
     // sepia / grayscale の変換係数
     const transform = filterType === 'sepia'
       ? 'var r=px[j],g=px[j+1],b=px[j+2];px[j]=Math.min(255,r*.393+g*.769+b*.189);px[j+1]=Math.min(255,r*.349+g*.686+b*.168);px[j+2]=Math.min(255,r*.272+g*.534+b*.131);'
@@ -1223,6 +1221,7 @@ i.src='data:image/jpeg;base64,${b64}';
   const scheduleNextCreatureRef = useRef(null);              // stale closure 対策
   const creatureFinalPosRef     = useRef({ top: 0, left: 0 }); // 生き物の最終停止座標（スコープ用）
   const frameLoadResolveRef  = useRef(null);
+  const photoLoadResolveRef  = useRef(null);
   const selectedIndexRef     = useRef(null);
   const galleryCountRef      = useRef(0);
   const slotX0               = useRef(new Animated.Value(0)).current;
@@ -1912,7 +1911,11 @@ i.src='data:image/jpeg;base64,${b64}';
     if (!compositing || !compositeRef.current) return;
     const run = async () => {
       try {
-        await new Promise(r => setTimeout(r, 100));
+        // 写真画像のonLoadを待つ（最大3秒）
+        await Promise.race([
+          new Promise(r => { photoLoadResolveRef.current = r; }),
+          new Promise(r => setTimeout(r, 3000)),
+        ]);
         if (compositing.frameSource) {
           // フレーム画像のonLoadを待つ（最大3秒）
           await Promise.race([
@@ -2819,7 +2822,6 @@ i.src='data:image/jpeg;base64,${b64}';
           source={{ html: filterPending.html }}
           onMessage={async (event) => {
             const raw = event.nativeEvent.data;
-            console.log('[FILTER] onMessage prefix:', raw.slice(0, 40), 'len:', raw.length);
             let outUri = null;
             try {
               const b64 = raw.replace(/^data:image\/(jpeg|png);base64,/, '');
@@ -2848,7 +2850,8 @@ i.src='data:image/jpeg;base64,${b64}';
             <>
               {/* 写真＋生き物をフルサイズで配置 */}
               <View style={StyleSheet.absoluteFill}>
-                <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+                <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover"
+                  onLoad={() => { photoLoadResolveRef.current?.(); }} />
                 {compositing.creatureSnapshot && (
                   <View style={[styles.creature, {
                     top:  adjTop(compositing.creatureSnapshot.pos.top),
@@ -2879,7 +2882,8 @@ i.src='data:image/jpeg;base64,${b64}';
             </>
           ) : (
             <>
-              <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+              <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover"
+                onLoad={() => { photoLoadResolveRef.current?.(); }} />
               {compositing.creatureSnapshot && (
                 <View style={[styles.creature, {
                   top:  adjTop(compositing.creatureSnapshot.pos.top),
