@@ -379,7 +379,7 @@ const PHOTO_LIMIT = 30;
 const OVERFLOW_LIMIT = 80; // 超過モード時の表示上限
 const PROTECT_LIMIT = 20;  // 保護できる写真の上限枚数
 const FRAME_MAX = 20;      // フレーム残り回数の上限
-const SPECIAL_ITEM_CHANCE = 0.10; // 特殊アイテム出現確率（10%）
+const SPECIAL_ITEM_CHANCE = 1.00; // デバッグ用：アイテム100%（本番は0.10）
 const SPECIAL_ITEMS = [
   { type: 'theme',    weight:  5, emoji: '🎁', label: '新テーマ' },
   { type: 'frame',    weight: 40, emoji: '🌟', label: 'フレーム+5' },
@@ -2770,16 +2770,20 @@ export default function App() {
             // 生き物のY座標を補正する（写真は全画面表示のままにして白帯を防ぐ）
             const yScale = compositing.fullScreen ? 1 : SCREEN_H / CAMERA_AREA_H;
             const adjTop  = (top)  => top  * yScale;
-            const photoFilter = compositing.filterType === 'sepia'
-              ? [{ sepia: 1 }]
+            // フィルターオーバーレイ色（view-shot確実対応のためView重ねで実現）
+            const filterOverlayColor = compositing.filterType === 'sepia'
+              ? 'rgba(112, 66, 20, 0.42)'
               : compositing.filterType === 'mono'
-              ? [{ grayscale: 1 }]
-              : undefined;
+              ? 'rgba(0, 0, 0, 0.55)'
+              : null;
             return compositing.frameSource ? (
             <>
               {/* 写真＋生き物をフルサイズで配置 */}
               <View style={StyleSheet.absoluteFill}>
-                <Image source={{ uri: compositing.photoUri }} style={[StyleSheet.absoluteFill, photoFilter && { filter: photoFilter }]} resizeMode="cover" />
+                <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+                {filterOverlayColor && (
+                  <View style={[StyleSheet.absoluteFill, { backgroundColor: filterOverlayColor }]} />
+                )}
                 {compositing.creatureSnapshot && (
                   <View style={[styles.creature, {
                     top:  adjTop(compositing.creatureSnapshot.pos.top),
@@ -2810,7 +2814,10 @@ export default function App() {
             </>
           ) : (
             <>
-              <Image source={{ uri: compositing.photoUri }} style={[StyleSheet.absoluteFill, photoFilter && { filter: photoFilter }]} resizeMode="cover" />
+              <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+              {filterOverlayColor && (
+                <View style={[StyleSheet.absoluteFill, { backgroundColor: filterOverlayColor }]} />
+              )}
               {compositing.creatureSnapshot && (
                 <View style={[styles.creature, {
                   top:  adjTop(compositing.creatureSnapshot.pos.top),
