@@ -1172,7 +1172,9 @@ export default function App() {
 
   // WebView Canvas でピクセルを直接変換（ctx.filter非依存・全WebView対応）
   const applyPhotoFilter = useCallback(async (uri, filterType) => {
+    console.log('[FILTER] start', filterType, uri.slice(-30));
     const b64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+    console.log('[FILTER] b64 length:', b64.length);
     // sepia / grayscale の変換係数
     const transform = filterType === 'sepia'
       ? 'var r=px[j],g=px[j+1],b=px[j+2];px[j]=Math.min(255,r*.393+g*.769+b*.189);px[j+1]=Math.min(255,r*.349+g*.686+b*.168);px[j+2]=Math.min(255,r*.272+g*.534+b*.131);'
@@ -2816,9 +2818,11 @@ i.src='data:image/jpeg;base64,${b64}';
           originWhitelist={['*']}
           source={{ html: filterPending.html }}
           onMessage={async (event) => {
+            const raw = event.nativeEvent.data;
+            console.log('[FILTER] onMessage prefix:', raw.slice(0, 40), 'len:', raw.length);
             let outUri = null;
             try {
-              const b64 = event.nativeEvent.data.replace(/^data:image\/jpeg;base64,/, '');
+              const b64 = raw.replace(/^data:image\/(jpeg|png);base64,/, '');
               outUri = `${FileSystem.cacheDirectory}filter_${Date.now()}.jpg`;
               await FileSystem.writeAsStringAsync(outUri, b64, { encoding: 'base64' });
             } catch (e) {
