@@ -118,6 +118,8 @@ const TRANSLATIONS = {
     item_harmony:  '和気あいあい',
     item_scope:    'スコープ',
     item_timeslow: 'タイムスロー',
+    item_sepia:    'セピアレンズ',
+    item_mono:     'モノクロレンズ',
     // Alert: 生き物・撮影
     alert_no_creature_title:   '生き物がいません！',
     alert_no_creature_body:    '生き物が現れたら撮影してね 👀',
@@ -140,6 +142,10 @@ const TRANSLATIONS = {
     alert_scope_body:          '生き物の登場場所がわかるようになりました！',
     alert_timeslow_title:      '⏱️ タイムスロー！',
     alert_timeslow_body:       '次の生き物の動きがゆっくりになります！',
+    alert_sepia_title:         '🕰️ セピアレンズ！',
+    alert_sepia_body:          '次の撮影写真がセピア調になります！',
+    alert_mono_title:          '🎞️ モノクロレンズ！',
+    alert_mono_body:           '次の撮影写真がモノクロになります！',
     // Alert: ギャラリー
     alert_no_perm_title:              '写真へのアクセス許可がありません',
     alert_no_photos_title:            'まだ写真がありません',
@@ -253,6 +259,8 @@ const TRANSLATIONS = {
     item_harmony:  'Harmony',
     item_scope:    'Scope',
     item_timeslow: 'Time Slow',
+    item_sepia:    'Sepia Lens',
+    item_mono:     'Mono Lens',
     // Alert: 生き物・撮影
     alert_no_creature_title:   'No creature!',
     alert_no_creature_body:    'Wait for a creature to appear 👀',
@@ -275,6 +283,10 @@ const TRANSLATIONS = {
     alert_scope_body:          "You can now see where creatures will appear!",
     alert_timeslow_title:      '⏱️ Time Slow!',
     alert_timeslow_body:       'The next creature will move slowly!',
+    alert_sepia_title:         '🕰️ Sepia Lens!',
+    alert_sepia_body:          'Your next photo will be sepia-toned!',
+    alert_mono_title:          '🎞️ Mono Lens!',
+    alert_mono_body:           'Your next photo will be monochrome!',
     // Alert: ギャラリー
     alert_no_perm_title:              'Photo Access Required',
     alert_no_photos_title:            'No photos yet',
@@ -374,6 +386,8 @@ const SPECIAL_ITEMS = [
   { type: 'harmony',  weight: 20, emoji: '🎊', label: '和気あいあい' },
   { type: 'scope',    weight: 30, emoji: '🔭', label: 'スコープ' },
   { type: 'timeslow', weight: 25, emoji: '⏱️', label: 'タイムスロー' },
+  { type: 'sepia',    weight: 15, emoji: '🕰️', label: 'セピアレンズ' },
+  { type: 'mono',     weight: 15, emoji: '🎞️', label: 'モノクロレンズ' },
 ];
 function pickSpecialItem(excludeTypes = []) {
   const pool  = excludeTypes.length ? SPECIAL_ITEMS.filter(i => !excludeTypes.includes(i.type)) : SPECIAL_ITEMS;
@@ -1137,6 +1151,7 @@ export default function App() {
   // 特殊アイテム状態
   const [harmonyActive, setHarmonyActive]     = useState(false); // 和気あいあい発動中
   const [timeslowActive, setTimeslowActive]   = useState(false); // タイムスロー発動中
+  const [filterType, setFilterType]           = useState(null);  // カラーフィルター種別: null | 'sepia' | 'mono'
   const [scopeActive, setScopeActive]         = useState(false); // スコープ発動中
   const [creatureCapturable, setCreatureCapturable] = useState(false); // 現在の生き物が撮影可能か
   const [autoDelete, setAutoDelete]           = useState(false);        // 自動削除：有効/無効
@@ -1148,6 +1163,7 @@ export default function App() {
   const harmonyActiveRef   = useRef(false);
   const scopeActiveRef     = useRef(false);
   const timeslowActiveRef  = useRef(false);
+  const filterTypeRef      = useRef(null);
   const autoDeleteRef      = useRef(false);
   const autoDeleteTargetRef = useRef('oldest');
   const bgmEnabledRef         = useRef(true);
@@ -1430,6 +1446,7 @@ export default function App() {
         const item = pickSpecialItem([
           ...(scopeActiveRef.current    ? ['scope']    : []),
           ...(timeslowActiveRef.current ? ['timeslow'] : []),
+          ...(filterTypeRef.current     ? [filterTypeRef.current] : []),
         ]);
         timerRef.current = setTimeout(() => {
           const spawnData = { creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, vp, isSpecial: true, itemType: item.type, itemLabel: t('item_' + item.type) };
@@ -1452,6 +1469,7 @@ export default function App() {
         const item = pickSpecialItem([
           ...(scopeActiveRef.current    ? ['scope']    : []),
           ...(timeslowActiveRef.current ? ['timeslow'] : []),
+          ...(filterTypeRef.current     ? [filterTypeRef.current] : []),
         ]);
         timerRef.current = setTimeout(() => {
           const spawnData = { creature: { id: item.type, emoji: item.emoji, size: 80 }, mode: 'fadein', edge: null, vp, isSpecial: true, itemType: item.type, itemLabel: t('item_' + item.type) };
@@ -1796,6 +1814,16 @@ export default function App() {
         timeslowActiveRef.current = true;
         playSE(SE_ITEM_FRAME);
         showAlert(t('alert_timeslow_title'), t('alert_timeslow_body'));
+      } else if (itype === 'sepia') {
+        setFilterType('sepia');
+        filterTypeRef.current = 'sepia';
+        playSE(SE_ITEM_FRAME);
+        showAlert(t('alert_sepia_title'), t('alert_sepia_body'));
+      } else if (itype === 'mono') {
+        setFilterType('mono');
+        filterTypeRef.current = 'mono';
+        playSE(SE_ITEM_FRAME);
+        showAlert(t('alert_mono_title'), t('alert_mono_body'));
       }
       return;
     }
@@ -1824,7 +1852,9 @@ export default function App() {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.9 });
       const frameSource = (frameEnabled && (frameCountsRef.current[theme] ?? 0) > 0)
         ? (THEME_FRAMES[theme] ?? null) : null;
-      setCompositing({ photoUri: photo.uri, creatureSnapshot, frameSource, usedFrameTheme: frameSource ? theme : null, harmonyEntries, wasScope, fullScreen });
+      const appliedFilter = filterTypeRef.current;
+      if (appliedFilter) { filterTypeRef.current = null; setFilterType(null); }
+      setCompositing({ photoUri: photo.uri, creatureSnapshot, frameSource, usedFrameTheme: frameSource ? theme : null, harmonyEntries, wasScope, fullScreen, filterType: appliedFilter });
     } catch (e) {
       isTakingPictureRef.current = false;
       showAlert(t('alert_photo_error_title'), t('alert_photo_error_body'));
@@ -2203,6 +2233,7 @@ export default function App() {
   harmonyActiveRef.current        = harmonyActive;
   scopeActiveRef.current          = scopeActive;
   timeslowActiveRef.current       = timeslowActive;
+  filterTypeRef.current           = filterType;
   autoDeleteRef.current           = autoDelete;
   autoDeleteTargetRef.current     = autoDeleteTarget;
   bgmEnabledRef.current           = bgmEnabled;
@@ -2739,11 +2770,16 @@ export default function App() {
             // 生き物のY座標を補正する（写真は全画面表示のままにして白帯を防ぐ）
             const yScale = compositing.fullScreen ? 1 : SCREEN_H / CAMERA_AREA_H;
             const adjTop  = (top)  => top  * yScale;
+            const photoFilter = compositing.filterType === 'sepia'
+              ? [{ sepia: 1 }]
+              : compositing.filterType === 'mono'
+              ? [{ grayscale: 1 }]
+              : undefined;
             return compositing.frameSource ? (
             <>
               {/* 写真＋生き物をフルサイズで配置 */}
               <View style={StyleSheet.absoluteFill}>
-                <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+                <Image source={{ uri: compositing.photoUri }} style={[StyleSheet.absoluteFill, photoFilter && { filter: photoFilter }]} resizeMode="cover" />
                 {compositing.creatureSnapshot && (
                   <View style={[styles.creature, {
                     top:  adjTop(compositing.creatureSnapshot.pos.top),
@@ -2774,7 +2810,7 @@ export default function App() {
             </>
           ) : (
             <>
-              <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+              <Image source={{ uri: compositing.photoUri }} style={[StyleSheet.absoluteFill, photoFilter && { filter: photoFilter }]} resizeMode="cover" />
               {compositing.creatureSnapshot && (
                 <View style={[styles.creature, {
                   top:  adjTop(compositing.creatureSnapshot.pos.top),
