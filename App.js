@@ -1170,18 +1170,23 @@ export default function App() {
   const [filterPending, setFilterPending]   = useState(null); // WebView フィルター処理リクエスト
   const filterResolveRef   = useRef(null);
 
-  // WebView Canvas で写真にセピア/グレースケールフィルターを適用し、新 URI を返す
+  // WebView Canvas でピクセルを直接変換（ctx.filter非依存・全WebView対応）
   const applyPhotoFilter = useCallback(async (uri, filterType) => {
     const b64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
-    const css = filterType === 'sepia' ? 'sepia(1)' : 'grayscale(1)';
+    // sepia / grayscale の変換係数
+    const transform = filterType === 'sepia'
+      ? 'var r=px[j],g=px[j+1],b=px[j+2];px[j]=Math.min(255,r*.393+g*.769+b*.189);px[j+1]=Math.min(255,r*.349+g*.686+b*.168);px[j+2]=Math.min(255,r*.272+g*.534+b*.131);'
+      : 'var gr=px[j]*.299+px[j+1]*.587+px[j+2]*.114;px[j]=px[j+1]=px[j+2]=gr;';
     const html = `<!DOCTYPE html><html><body style="margin:0"><canvas id="c"></canvas><script>
-const i=new Image();
-i.onload=()=>{
-  const c=document.getElementById('c');
+var i=new Image();
+i.onload=function(){
+  var c=document.getElementById('c');
   c.width=i.naturalWidth;c.height=i.naturalHeight;
-  const x=c.getContext('2d');
-  x.filter='${css}';
+  var x=c.getContext('2d');
   x.drawImage(i,0,0);
+  var d=x.getImageData(0,0,c.width,c.height),px=d.data;
+  for(var j=0;j<px.length;j+=4){${transform}}
+  x.putImageData(d,0,0);
   window.ReactNativeWebView.postMessage(c.toDataURL('image/jpeg',0.9));
 };
 i.src='data:image/jpeg;base64,${b64}';
