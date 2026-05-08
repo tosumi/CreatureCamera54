@@ -20,6 +20,8 @@ import * as MediaLibrary from 'expo-media-library';
 import { captureRef } from 'react-native-view-shot';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system';
+import { WebView } from 'react-native-webview';
 
 const ALBUM_NAME = 'CreatureCamera';
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
@@ -1164,6 +1166,30 @@ export default function App() {
   const scopeActiveRef     = useRef(false);
   const timeslowActiveRef  = useRef(false);
   const filterTypeRef      = useRef(null);
+  const [filterPending, setFilterPending]   = useState(null); // WebView フィルター処理リクエスト
+  const filterResolveRef   = useRef(null);
+
+  // WebView Canvas で写真にセピア/グレースケールフィルターを適用し、新 URI を返す
+  const applyPhotoFilter = useCallback(async (uri, filterType) => {
+    const b64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+    const css = filterType === 'sepia' ? 'sepia(1)' : 'grayscale(1)';
+    const html = `<!DOCTYPE html><html><body style="margin:0"><canvas id="c"></canvas><script>
+const i=new Image();
+i.onload=()=>{
+  const c=document.getElementById('c');
+  c.width=i.naturalWidth;c.height=i.naturalHeight;
+  const x=c.getContext('2d');
+  x.filter='${css}';
+  x.drawImage(i,0,0);
+  window.ReactNativeWebView.postMessage(c.toDataURL('image/jpeg',0.9));
+};
+i.src='data:image/jpeg;base64,${b64}';
+</script></body></html>`;
+    return new Promise((resolve) => {
+      filterResolveRef.current = resolve;
+      setFilterPending({ html });
+    });
+  }, []);
   const autoDeleteRef      = useRef(false);
   const autoDeleteTargetRef = useRef('oldest');
   const bgmEnabledRef         = useRef(true);
@@ -1854,7 +1880,9 @@ export default function App() {
         ? (THEME_FRAMES[theme] ?? null) : null;
       const appliedFilter = filterTypeRef.current;
       if (appliedFilter) { filterTypeRef.current = null; setFilterType(null); }
-      setCompositing({ photoUri: photo.uri, creatureSnapshot, frameSource, usedFrameTheme: frameSource ? theme : null, harmonyEntries, wasScope, fullScreen, filterType: appliedFilter });
+      // フィルターアイテム使用中は WebView で写真を事前処理してから合成
+      const photoUri = appliedFilter ? await applyPhotoFilter(photo.uri, appliedFilter) : photo.uri;
+      setCompositing({ photoUri, creatureSnapshot, frameSource, usedFrameTheme: frameSource ? theme : null, harmonyEntries, wasScope, fullScreen });
     } catch (e) {
       isTakingPictureRef.current = false;
       showAlert(t('alert_photo_error_title'), t('alert_photo_error_body'));
@@ -2763,6 +2791,28 @@ export default function App() {
         />
       )}
 
+      {/* 隠し WebView：セピア/モノクロフィルターを Canvas で写真に適用 */}
+      {filterPending && (
+        <WebView
+          style={{ position: 'absolute', width: 1, height: 1, opacity: 0 }}
+          originWhitelist={['*']}
+          source={{ html: filterPending.html }}
+          onMessage={async (event) => {
+            try {
+              const b64 = event.nativeEvent.data.replace(/^data:image\/jpeg;base64,/, '');
+              const outUri = `${FileSystem.cacheDirectory}filter_${Date.now()}.jpg`;
+              await FileSystem.writeAsStringAsync(outUri, b64, { encoding: FileSystem.EncodingType.Base64 });
+              filterResolveRef.current?.(outUri);
+            } catch {
+              // フィルター失敗時はオリジナルをそのまま使用（resolveは撮影フロー側がtry-catchで処理）
+            } finally {
+              filterResolveRef.current = null;
+              setFilterPending(null);
+            }
+          }}
+        />
+      )}
+
       {compositing && (
         <View ref={compositeRef} style={StyleSheet.absoluteFill} collapsable={false}>
           {(() => {
@@ -2770,20 +2820,11 @@ export default function App() {
             // 生き物のY座標を補正する（写真は全画面表示のままにして白帯を防ぐ）
             const yScale = compositing.fullScreen ? 1 : SCREEN_H / CAMERA_AREA_H;
             const adjTop  = (top)  => top  * yScale;
-            // フィルターオーバーレイ色（view-shot確実対応のためView重ねで実現）
-            const filterOverlayColor = compositing.filterType === 'sepia'
-              ? 'rgba(112, 66, 20, 0.42)'
-              : compositing.filterType === 'mono'
-              ? 'rgba(0, 0, 0, 0.55)'
-              : null;
             return compositing.frameSource ? (
             <>
               {/* 写真＋生き物をフルサイズで配置 */}
               <View style={StyleSheet.absoluteFill}>
                 <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-                {filterOverlayColor && (
-                  <View style={[StyleSheet.absoluteFill, { backgroundColor: filterOverlayColor }]} />
-                )}
                 {compositing.creatureSnapshot && (
                   <View style={[styles.creature, {
                     top:  adjTop(compositing.creatureSnapshot.pos.top),
@@ -2815,9 +2856,6 @@ export default function App() {
           ) : (
             <>
               <Image source={{ uri: compositing.photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-              {filterOverlayColor && (
-                <View style={[StyleSheet.absoluteFill, { backgroundColor: filterOverlayColor }]} />
-              )}
               {compositing.creatureSnapshot && (
                 <View style={[styles.creature, {
                   top:  adjTop(compositing.creatureSnapshot.pos.top),
