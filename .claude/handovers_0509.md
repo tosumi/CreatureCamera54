@@ -234,7 +234,7 @@ const THEME_SPECIAL_ANIMS = {
 
 ## 既知の注意点・バグ修正履歴（累積）
 
-（1〜29 は handovers_0505.md 参照）
+（1〜29 は handovers_0505.md 参照、30~34は、ver. 1.1.7 に反映済み）
 
 30. **フレーム+5 上限超過で無駄引き（0509）**: 上限時に別テーマへランダム振り替え。`alert_frame_redirect_body` メッセージ追加。
 31. **WebView `ctx.filter` が無効（0509）**: `getImageData/putImageData` + 係数演算でピクセル直接変換に変更。
